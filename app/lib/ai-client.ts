@@ -1,0 +1,1 @@
+//Wrapper for your AI/Translation API
