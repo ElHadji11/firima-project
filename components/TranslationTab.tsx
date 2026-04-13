@@ -38,6 +38,50 @@ export default function TranslationTab({ context }: { context: string }) {
     const [isRecording, setIsRecording] = useState(false);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
+    const [isSpeaking, setIsSpeaking] = useState(false);
+
+    // --- Fonction pour lire le Texte (TTS) ---
+    const handlePlayTTS = async () => {
+        if (!translatedText) return;
+
+        setIsSpeaking(true);
+        try {
+            const response = await fetch('/api/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: translatedText,
+                    targetLang: targetLang // "français", "anglais", ou "wolof"
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error || `Erreur serveur : ${response.status}`);
+            }
+
+            // Récupérer la réponse sous forme de fichier binaire (Blob)
+            const audioBlob = await response.blob();
+
+            // Créer une URL lisible par le navigateur
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+
+            // Lancer la lecture
+            audio.play();
+
+            // Réinitialiser le bouton quand l'audio est terminé
+            audio.onended = () => {
+                setIsSpeaking(false);
+                URL.revokeObjectURL(audioUrl); // Nettoyage de la mémoire
+            };
+
+        } catch (error) {
+            console.error("Erreur de lecture audio:", error);
+            setError("Impossible de générer la voix.");
+            setIsSpeaking(false);
+        }
+    };
 
     const startRecording = async () => {
         setError('');
@@ -233,11 +277,19 @@ export default function TranslationTab({ context }: { context: string }) {
                         {/* Bouton Volume (Inactif pour l'instant) */}
                         <Button
                             variant="ghost"
-                            className="rounded-full h-10 w-10 bg-linear-to-br from-primary to-primary/80 hover:from-primary/90 hover:to-primary shadow hover:shadow-md transition-all flex items-center justify-center"
                             size="icon"
-                            disabled // Désactivé jusqu'à l'implémentation du TTS
+                            onClick={handlePlayTTS}
+                            disabled={!translatedText || isSpeaking || loading} // Désactivé si pas de texte ou déjà en train de parler
+                            className={`absolute bottom-4 right-4 rounded-full transition-all duration-200 ${isSpeaking
+                                ? 'bg-accent/30 text-accent animate-pulse'
+                                : 'bg-accent/10 hover:bg-accent/20 text-accent'
+                                }`}
                         >
-                            <Volume2 className="w-5 h-5" />
+                            {isSpeaking ? (
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : (
+                                <Volume2 className="w-5 h-5" />
+                            )}
                         </Button>
                     </div>
                 </div>
