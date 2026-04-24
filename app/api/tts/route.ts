@@ -15,18 +15,14 @@ export async function POST(req: Request) {
         console.log(`Génération TTS demandée pour : ${targetLang}`);
 
         // Pour le MVP, on utilise OpenAI TTS pour TOUTES les langues.
-        // On assigne juste une voix différente pour varier un peu.
-        let selectedVoice: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer" = "alloy";
-
-        if (targetLang.toLowerCase() === 'français') selectedVoice = 'alloy';
-        else if (targetLang.toLowerCase() === 'anglais') selectedVoice = 'onyx';
-        else selectedVoice = 'echo'; // Voix par défaut pour le Wolof pour le moment
+        let selectedVoice: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer" = "nova";
 
         // Appel à l'API OpenAI TTS
         const mp3Response = await openai.audio.speech.create({
             model: "tts-1",
             voice: selectedVoice,
             input: text,
+            speed: 0.85,
         });
 
         // Conversion en Buffer pour l'envoi au frontend

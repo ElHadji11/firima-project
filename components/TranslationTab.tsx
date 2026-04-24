@@ -1,123 +1,141 @@
 // src/components/TranslationTab.tsx
-import { useRef, useState } from 'react';
+"use client";
+
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Mic, Volume2, ArrowRightLeft, Zap, Info, Loader2, StopCircle } from 'lucide-react';
+import { Mic, Volume2, ArrowRightLeft, Info, Loader2, StopCircle, Copy, Check } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-// Sélecteur de langue simplifié : Langue de sortie uniquement
-function LanguageSelector({ selected, onChange }: { selected: string; onChange: (value: string) => void }) {
+// 🎨 Sélecteur de langue minimaliste (style DeepL)
+function LanguageSelector({
+    selected,
+    onChange,
+    options
+}: {
+    selected: string;
+    onChange: (value: string) => void;
+    options: { value: string; label: string }[];
+}) {
     return (
-        <div className="space-y-2">
-            <label className="text-xs font-semibold text-foreground/50 uppercase tracking-wider">
-                Langue de Sortie
-            </label>
-            <Select value={selected} onValueChange={onChange}>
-                <SelectTrigger className="w-full h-11 bg-card/50 border-border/50 hover:border-primary/50 transition-colors focus:border-primary focus:ring-primary/20">
-                    <SelectValue placeholder="Sélectionner une langue" />
-                </SelectTrigger>
-                <SelectContent className="bg-card border-border">
-                    <SelectItem value="français">Français</SelectItem>
-                    <SelectItem value="wolof">Wolof</SelectItem>
-                    <SelectItem value="anglais">Anglais</SelectItem>
-                </SelectContent>
-            </Select>
-        </div>
+        <Select value={selected} onValueChange={onChange}>
+            <SelectTrigger className="h-9 w-auto min-w-[140px] border-none bg-transparent hover:bg-accent/5 text-sm font-medium text-foreground/80 focus:ring-0 focus:ring-offset-0 transition-colors">
+                <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-card border-border shadow-lg">
+                {options.map(opt => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-sm">
+                        {opt.label}
+                    </SelectItem>
+                ))}
+            </SelectContent>
+        </Select>
     );
 }
-
-
 
 export default function TranslationTab({ context }: { context: string }) {
     const [sourceText, setSourceText] = useState('');
     const [translatedText, setTranslatedText] = useState('');
-    const [targetLang, setTargetLang] = useState('wolof'); // Langue cible par défaut
+    const [phoneticText, setPhoneticText] = useState('');
+    const [sourceLang, setSourceLang] = useState('auto'); // Langue source ajoutée
+    const [targetLang, setTargetLang] = useState('wolof');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [copied, setCopied] = useState(false);
 
     const [isRecording, setIsRecording] = useState(false);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const [isSpeaking, setIsSpeaking] = useState(false);
 
-    // --- Fonction pour lire le Texte (TTS) ---
+    useEffect(() => {
+        // 1. On crée un timer
+        const timer = setTimeout(() => {
+            if (sourceText.trim().length > 0) {
+                handleTranslateText();
+            } else {
+                // Si l'utilisateur a tout effacé, on efface aussi la traduction
+                setTranslatedText('');
+                setPhoneticText('');
+            }
+        }, 1000); // ⏱️ Attendre 1 seconde (1000ms) après la dernière frappe
+
+        return () => clearTimeout(timer);
+    }, [sourceText, targetLang]);
+
+    const sourceLanguages = [
+        { value: 'auto', label: '🔍 Détecter la langue' },
+        { value: 'français', label: 'Français' },
+        { value: 'wolof', label: 'Wolof' },
+        { value: 'anglais', label: 'Anglais' },
+    ];
+
+    const targetLanguages = [
+        { value: 'français', label: 'Français' },
+        { value: 'wolof', label: 'Wolof' },
+        { value: 'anglais', label: 'Anglais' },
+    ];
+
     const handlePlayTTS = async () => {
         if (!translatedText) return;
-
         setIsSpeaking(true);
+        setError('');
+
         try {
             const response = await fetch('/api/tts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    text: translatedText,
-                    targetLang: targetLang // "français", "anglais", ou "wolof"
+                    text: phoneticText,
+                    targetLang: targetLang
                 })
             });
 
             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `Erreur serveur : ${response.status}`);
+                throw new Error(`Erreur réseau (${response.status})`);
             }
 
-            // Récupérer la réponse sous forme de fichier binaire (Blob)
             const audioBlob = await response.blob();
-
-            // Créer une URL lisible par le navigateur
             const audioUrl = URL.createObjectURL(audioBlob);
             const audio = new Audio(audioUrl);
 
-            // Lancer la lecture
             audio.play();
 
-            // Réinitialiser le bouton quand l'audio est terminé
             audio.onended = () => {
                 setIsSpeaking(false);
-                URL.revokeObjectURL(audioUrl); // Nettoyage de la mémoire
+                URL.revokeObjectURL(audioUrl);
             };
 
-        } catch (error) {
-            console.error("Erreur de lecture audio:", error);
-            setError("Impossible de générer la voix.");
+        } catch (err: any) {
+            console.error("Erreur de lecture audio:", err);
+            setError(`Échec audio : ${err.message}`);
             setIsSpeaking(false);
         }
     };
 
     const startRecording = async () => {
         setError('');
-        audioChunksRef.current = []; // Réinitialiser les chunks
+        audioChunksRef.current = [];
 
         try {
-            // Demander la permission d'accéder au microphone
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-            // Créer le MediaRecorder avec le stream
             const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
             mediaRecorderRef.current = mediaRecorder;
 
-            // Gérer les données audio disponibles
             mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
                     audioChunksRef.current.push(event.data);
                 }
             };
 
-            // Gérer l'arrêt de l'enregistrement
             mediaRecorder.onstop = async () => {
-                // Créer un Blob unique à partir des chunks accumulés
                 const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-
-                // Arrêter toutes les pistes du stream pour libérer le micro
                 stream.getTracks().forEach(track => track.stop());
-
-                // Envoyer l'audio pour transcription
                 await handleTranscribeAudio(audioBlob);
             };
 
-            // Démarrer l'enregistrement (collecter les données par tranches de 1s)
             mediaRecorder.start(1000);
             setIsRecording(true);
-            console.log("Enregistrement démarré...");
 
         } catch (err) {
             console.error("Erreur d'accès au microphone :", err);
@@ -125,40 +143,31 @@ export default function TranslationTab({ context }: { context: string }) {
         }
     };
 
-    // --- Fonction pour arrêter l'enregistrement ---
     const stopRecording = () => {
         if (mediaRecorderRef.current && isRecording) {
             mediaRecorderRef.current.stop();
             setIsRecording(false);
-            console.log("Enregistrement arrêté.");
         }
     };
 
-    // --- Fonction pour envoyer l'audio à l'API de transcription ---
     const handleTranscribeAudio = async (audioBlob: Blob) => {
         setLoading(true);
         setError('');
-        setSourceText(''); // Effacer le texte source précédent
+        setSourceText('');
 
         const formData = new FormData();
-        // Le nom du fichier 'input.webm' est important pour que OpenAI reconnaisse le format
         formData.append('file', audioBlob, 'input.webm');
 
         try {
             const response = await fetch('/api/transcribe', {
                 method: 'POST',
-                body: formData, // Envoi des données FormData
+                body: formData,
             });
 
             const data = await response.json();
 
             if (data.text) {
-                // Mettre à jour le texte source avec la transcription reçue
                 setSourceText(data.text);
-                console.log("Transcription reçue et affichée.");
-
-                // Optionnel : Lancer automatiquement la traduction après la transcription
-                // handleTranslateText(); 
             } else if (data.error) {
                 setError(`Erreur de transcription : ${data.error}`);
             }
@@ -170,10 +179,9 @@ export default function TranslationTab({ context }: { context: string }) {
         }
     };
 
-    // --- Fonction principale de traduction (Texte-à-Texte) ---
     const handleTranslateText = async () => {
         setError('');
-        setTranslatedText(''); // Effacer la traduction précédente
+        setTranslatedText('');
 
         if (!sourceText.trim()) {
             setError('Veuillez entrer du texte à traduire.');
@@ -188,7 +196,7 @@ export default function TranslationTab({ context }: { context: string }) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     text: sourceText,
-                    targetLang: targetLang, // Envoi de la langue de sortie sélectionnée
+                    targetLang: targetLang,
                 })
             });
 
@@ -196,9 +204,15 @@ export default function TranslationTab({ context }: { context: string }) {
 
             if (data.translation) {
                 setTranslatedText(data.translation);
+
+                if (data.phoneticAudio) {
+                    setPhoneticText(data.phoneticAudio);
+                } else {
+                    setPhoneticText(data.translation);
+                }
             } else if (data.error) {
                 setError(data.error);
-                setTranslatedText(data.error); // Afficher l'erreur dans la zone de sortie
+                setTranslatedText(data.error);
             } else {
                 setError('Une erreur inconnue est survenue.');
             }
@@ -210,123 +224,217 @@ export default function TranslationTab({ context }: { context: string }) {
         }
     };
 
+    const handleCopy = async () => {
+        if (!translatedText) return;
+        await navigator.clipboard.writeText(translatedText);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    const handleSwapLanguages = () => {
+        if (sourceLang === 'auto') return; // Pas de swap si auto-détection
+        const temp = sourceLang;
+        setSourceLang(targetLang);
+        setTargetLang(temp);
+    };
+
     return (
-        <div className="space-y-4">
-            <div className="flex flex-col md:flex-row items-stretch gap-4 md:gap-6 w-full">
+        <div className="w-full max-w-7xl mx-auto space-y-3">
+            {/* ⚠️ Notification système */}
+            <div className="flex items-center gap-2 px-4 py-2.5 bg-primary/5 border border-primary/10 rounded-lg">
+                <Info className="w-4 h-4 text-primary shrink-0" />
+                <p className="text-xs text-foreground/70">
+                    <strong>Langues supportées :</strong> Français, Wolof, Anglais en entrée/sortie.
+                </p>
+            </div>
 
-                {/* --- Panneau Source : Entrée (Simplifié) --- */}
-                <div className="flex-1 w-full group space-y-2 ">
-                    <div className="relative">
-                        <div className="absolute inset-0 rounded-2xl bg-linear-to-br from-primary/5 to-accent/5 opacity-0 group-focus-within:opacity-100 transition-opacity duration-300" />
-                        <Textarea
-                            value={sourceText}
-                            onChange={(e) => setSourceText(e.target.value)}
-                            placeholder={`Entrez ou parlez votre texte (${context.toLowerCase()})...`}
-                            className="relative h-64 p-4 bg-card/50 border-border/50 text-foreground placeholder:text-foreground/30 rounded-2xl focus:border-primary focus:ring-2 focus:ring-primary/30 hover:border-border/80 transition-all resize-none"
-                        />
+            {/* 🎯 Conteneur principal - Style DeepL "Seamless Cards" */}
+            <div className="relative bg-card border border-border rounded-2xl shadow-lg overflow-hidden">
 
-                        {/* --- Bouton Micro Interactif --- */}
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            // Changer la fonction et le style selon l'état d'enregistrement
-                            className={`absolute bottom-4 right-4 rounded-full transition-all duration-200 ${isRecording
-                                ? 'bg-destructive/10 hover:bg-destructive/20 text-destructive animate-pulse'
-                                : 'bg-primary/10 hover:bg-primary/20 text-primary'
-                                }`}
-                            onClick={isRecording ? stopRecording : startRecording} // Alterner start/stop
-                            disabled={loading} // Désactiver pendant le chargement
-                        >
-                            {isRecording ? (
-                                <StopCircle className="w-5 h-5" /> // Icône Stop si enregistrement
-                            ) : (
-                                <Mic className="w-5 h-5" /> // Icône Micro sinon
+                {/* Layout responsive : 2 colonnes desktop, stack mobile */}
+                <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border">
+
+                    {/* ═══════════════════════════════════════════════════
+                        PANNEAU GAUCHE : SOURCE (Texte d'entrée)
+                    ═══════════════════════════════════════════════════ */}
+                    <div className="relative flex flex-col">
+
+                        {/* En-tête : Sélecteur de langue source */}
+                        <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
+                            <LanguageSelector
+                                selected={sourceLang}
+                                onChange={setSourceLang}
+                                options={sourceLanguages}
+                            />
+                        </div>
+
+                        {/* Zone de texte source (Fusion avec la carte) */}
+                        <div className="relative flex-1">
+                            <Textarea
+                                value={sourceText}
+                                onChange={(e) => setSourceText(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && e.ctrlKey) {
+                                        handleTranslateText();
+                                    }
+                                }}
+                                placeholder={`Entrez votre texte ici (${context.toLowerCase()})...`}
+                                className="w-full h-full min-h-[280px] resize-none border-0 bg-transparent p-5 text-base text-foreground placeholder:text-foreground/30 focus-visible:ring-0 focus-visible:ring-offset-0"
+                            />
+
+                            {/* Overlay de chargement */}
+                            {loading && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-card/60 backdrop-blur-sm z-10">
+                                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                                </div>
                             )}
-                        </Button>
-                    </div>
-                    {/* Notification Utilisateur */}
-                    <div className="flex items-center gap-2 p-3 bg-card/30 border border-border/30 rounded-xl">
-                        <Info className="w-4 h-4 text-primary" />
-                        <p className="text-xs text-foreground/50">Important : Seuls le Français, le Wolof et l'Anglais sont supportés en entrée.</p>
-                    </div>
-                </div>
+                        </div>
 
-                {/* --- Panneau Cible : Sortie (Le cœur du changement) --- */}
-                <div className="space-y-6 flex-1 w-full">
-                    <div className="space-y-3">
-                        <LanguageSelector selected={targetLang} onChange={setTargetLang} />
-                    </div>
+                        {/* Footer : Barre d'outils (Micro + Stats) */}
+                        <div className="flex items-center justify-between px-5 py-3 border-t border-border/50 bg-accent/5">
+                            <div className="flex items-center gap-2">
+                                {/* Bouton Micro avec animation pulse si enregistrement */}
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={isRecording ? stopRecording : startRecording}
+                                    disabled={loading}
+                                    className={`h-9 w-9 rounded-lg transition-all ${isRecording
+                                        ? 'bg-destructive/10 text-destructive animate-pulse hover:bg-destructive/20'
+                                        : 'hover:bg-accent/80 text-foreground/60 hover:text-foreground'
+                                        }`}
+                                >
+                                    {isRecording ? (
+                                        <StopCircle className="w-5 h-5 transition-colors " />
+                                    ) : loading ? (
+                                        <Loader2 className="w-5 h-5 animate-spin text-foreground/60" />
+                                    ) : (
+                                        <Mic className="h-5 w-5 transition-colors" />
+                                    )}
+                                </Button>
 
-                    <div className="relative group">
-                        <div className="absolute inset-0 rounded-2xl bg-linear-to-br from-accent/5 to-primary/5 opacity-0 group-focus-within:opacity-100 transition-opacity duration-300" />
-                        <Textarea
-                            value={translatedText}
-                            readOnly
-                            placeholder="La traduction s'affichera ici..."
-                            // Gestion de la couleur si erreur
-                            className={`relative h-64 p-4 bg-card/50 border-border/50 rounded-2xl resize-none transition-all ${error ? 'text-destructive border-destructive' : 'text-foreground'}`}
-                        />
-
-                        {/* Indicateur de chargement centré si loading */}
-                        {loading && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-card/80 rounded-2xl z-10">
-                                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                                {/* Bouton Traduire (Ctrl+Entrée hint) */}
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={handleTranslateText}
+                                    disabled={loading || !sourceText.trim()}
+                                    className="h-9 px-3 text-xs font-medium hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                                >
+                                    {loading ? (
+                                        <>
+                                            <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                                            Traduction...
+                                        </>
+                                    ) : (
+                                        'Traduire'
+                                    )}
+                                </Button>
                             </div>
-                        )}
 
-                        {/* Bouton Volume (Inactif pour l'instant) */}
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={handlePlayTTS}
-                            disabled={!translatedText || isSpeaking || loading} // Désactivé si pas de texte ou déjà en train de parler
-                            className={`absolute bottom-4 right-4 rounded-full transition-all duration-200 ${isSpeaking
-                                ? 'bg-accent/30 text-accent animate-pulse'
-                                : 'bg-accent/10 hover:bg-accent/20 text-accent'
-                                }`}
-                        >
-                            {isSpeaking ? (
-                                <Loader2 className="w-5 h-5 animate-spin" />
-                            ) : (
-                                <Volume2 className="w-5 h-5" />
+                            {/* Compteur de caractères */}
+                            <span className="text-xs text-foreground/40">
+                                {sourceText.length} / 5000
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* ═══════════════════════════════════════════════════
+                        PANNEAU DROIT : TRADUCTION (Texte de sortie)
+                    ═══════════════════════════════════════════════════ */}
+                    <div className="relative flex flex-col">
+
+                        {/* En-tête : Sélecteur de langue cible */}
+                        <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
+                            <LanguageSelector
+                                selected={targetLang}
+                                onChange={setTargetLang}
+                                options={targetLanguages}
+                            />
+                        </div>
+
+                        {/* Zone de texte traduit (Fusion avec la carte) */}
+                        <div className="relative flex-1">
+                            <Textarea
+                                value={translatedText}
+                                readOnly
+                                placeholder="La traduction apparaîtra ici..."
+                                className={`w-full h-full min-h-[280px] resize-none border-0 bg-transparent p-5 text-base placeholder:text-foreground/30 focus-visible:ring-0 focus-visible:ring-offset-0 ${error ? 'text-destructive' : 'text-foreground'
+                                    }`}
+                            />
+
+                            {/* Overlay de chargement */}
+                            {loading && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-card/60 backdrop-blur-sm z-10">
+                                    <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                                </div>
                             )}
-                        </Button>
+                        </div>
+
+                        {/* Footer : Barre d'outils (Volume + Copier) */}
+                        <div className="flex items-center justify-between px-5 py-3 border-t border-border/50 bg-accent/5">
+                            <div className="flex items-center gap-2">
+                                {/* Bouton Volume (TTS) */}
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={handlePlayTTS}
+                                    disabled={!translatedText || isSpeaking || loading}
+                                    className={`h-9 w-9 rounded-lg transition-all ${isSpeaking
+                                        ? 'bg-accent/20 text-accent animate-pulse'
+                                        : 'hover:bg-accent/80 text-foreground/60 hover:text-foreground'
+                                        }`}
+                                >
+                                    {isSpeaking ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <Volume2 className="w-4 h-4" />
+                                    )}
+                                </Button>
+
+                                {/* Bouton Copier */}
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={handleCopy}
+                                    disabled={!translatedText}
+                                    className="h-9 w-9 rounded-lg hover:bg-accent/80 text-foreground/60 hover:text-foreground transition-all"
+                                >
+                                    {copied ? (
+                                        <Check className="w-4 h-4 text-green-500" />
+                                    ) : (
+                                        <Copy className="w-4 h-4" />
+                                    )}
+                                </Button>
+                            </div>
+
+                            {/* Feedback visuel si erreur */}
+                            {error && !loading && (
+                                <span className="text-xs text-destructive">
+                                    {error}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 </div>
 
-                {/* Boutons d'action centraux (Inverser - Inactif pour l'instant) */}
-                <div className="shrink-0 flex flex-col justify-start items-center pt-10">
+                {/* 🔄 BOUTON D'INVERSION (Swap) - Position centrale absolue */}
+                <div className="absolute top-[52px] left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 hidden md:block">
                     <Button
-                        className="rounded-full h-12 w-12 bg-linear-to-br from-primary to-primary/80 hover:from-primary/90 hover:to-primary shadow-lg transition-all flex items-center justify-center mx-auto"
                         size="icon"
-                        disabled // Désactivé car la source est auto-détectée
+                        onClick={handleSwapLanguages}
+                        disabled={sourceLang === 'auto'}
+                        className="h-10 w-10 rounded-full bg-card border-2 border-border shadow-md hover:shadow-lg hover:bg-accent/10 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                     >
-                        <ArrowRightLeft className="w-5 h-5" />
+                        <ArrowRightLeft className="w-4 h-4 text-foreground/60" />
                     </Button>
-                    <div className="text-xs text-foreground/40 text-center opacity-50">Inverser</div>
                 </div>
             </div>
 
-            {/* --- Footer d'action --- */}
-            <div className="flex gap-3 justify-center pt-4 border-t border-border/30">
-                <Button
-                    className="rounded-xl px-8 h-11 bg-linear-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary text-primary-foreground font-semibold shadow-lg transition-all flex items-center gap-2"
-                    onClick={handleTranslateText}
-                    disabled={loading} // Désactiver pendant le chargement
-                >
-                    {loading ? (
-                        <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Traduction en cours...
-                        </>
-                    ) : (
-                        <>
-                            <Zap className="w-4 h-4" />
-                            Traduire
-                        </>
-                    )}
-                </Button>
-            </div>
-        </div >
+            {/* 💡 Conseil raccourci clavier */}
+            <p className="text-center text-xs text-foreground/40">
+                💡 Astuce : Appuyez sur <kbd className="px-2 py-0.5 bg-accent/20 border border-border rounded text-foreground/60">Ctrl</kbd> + <kbd className="px-2 py-0.5 bg-accent/20 border border-border rounded text-foreground/60">Entrée</kbd> pour traduire rapidement
+            </p>
+        </div>
     );
-} 
+}

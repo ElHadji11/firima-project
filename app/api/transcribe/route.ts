@@ -29,11 +29,14 @@ export async function POST(req: Request) {
         console.log("Envoi du fichier audio à Whisper pour transcription...");
 
         // Appel à l'API OpenAI Whisper pour la transcription
-        // On précise la langue d'entrée ('fr') pour améliorer la précision
+        // Audio bilingue (wolof + francais): on laisse la langue en auto-detection.
         const transcription = await openai.audio.transcriptions.create({
             file: audioFile,
             model: "whisper-1",
-            language: "fr", // Langue source : Français
+            // Indice utile pour mieux capter le wolof sans forcer une seule langue.
+            prompt: "Transcrire fidèlement un melange wolof (Senegal) et francais. Ne pas traduire. Respecter la langue parlee telle quelle.",
+            temperature: 0,
+
         });
 
         console.log("Transcription réussie :", transcription.text);
