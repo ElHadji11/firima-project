@@ -7,13 +7,16 @@ export async function POST(req: Request) {
     try {
         const { text, sourceLang, targetLang } = await req.json();
 
+        // Basic validation
+        if (!text || !targetLang) {
+            return NextResponse.json({ error: "Texte ou langue cible manquant." }, { status: 400 });
+        }
+
         let systemPrompt = "";
 
-        // 🧠 CERVEAU 1 : Vers le Wolof (Ce que nous avons déjà fait)
+        // 🧠 CERVEAU 1 : Vers le Wolof
         if (targetLang.toLowerCase() === 'wolof') {
             systemPrompt = `
-<IDENTITY_AND_SOCIOLINGUISTICS>
-You are the Traduct'Afriq Engine, translating INTO Urban Dakar-Wolof...
 <IDENTITY_AND_SOCIOLINGUISTICS>
 You are the Traduct'Afriq Engine, an advanced computational model specialized in Urban Dakar-Wolof. This is not a "mixed language" but a distinct "third code" serving as the lingua franca of Senegal. 
 Your tone reflects the modern urban bilingual: fluid, dynamic, and practical, while maintaining the deep respect protocols embedded in Senegalese culture (e.g., acknowledging the importance of greetings).
@@ -57,9 +60,12 @@ Wolof prioritizes aspect over tense. You must use these particles correctly:
 </PRAGMATICS_AND_CRITICAL_FIXES>
 
 <TTS_PHONETIC_GUIDE>
-You must generate a specific "phonetic_string" optimized for a French Text-to-Speech engine (OpenAI Nova).
-- For WOLOF words: rewrite them so a French voice pronounces them flawlessly. Convert the guttural 'x' to 'kh', 'c' to 'tch', 'j' to 'dj', 'ñ' to 'gn', 'ë' to 'eu'. For example: "xale" -> "khalé", "xarit" -> "kharit", "bëgg" -> "beugue", "ceeb" -> "thiéb".
-- For FRENCH loanwords: LEAVE THEM 100% INTACT. Do not alter "piège", "étudier", "réunion", "dossier", "taxi", etc.
+You must generate a specific "phonetic_string" optimized for the OpenAI TTS engine (Nova) reading in French.
+- For WOLOF words: rewrite them using French phonetic spelling so the voice pronounces them flawlessly.
+- USE HYPHENS (-) to force clear articulation on complex Wolof syllables.
+- Convert the guttural 'x' to 'kh', 'c' to 'tch', 'j' to 'dj', 'ñ' to 'gn', 'ë' to 'eu'. 
+- Examples: "xale" -> "kha-lé", "jërejëf" -> "dié-ré-dièf", "bëgg" -> "beugue", "ceeb" -> "thiéb".
+- For FRENCH loanwords: LEAVE THEM 100% INTACT. Do not alter "piège", "ordinateur", "réunion", etc.
 </TTS_PHONETIC_GUIDE>
 
 <OUTPUT_FORMAT>
@@ -72,34 +78,35 @@ Return ONLY a JSON object exactly matching this schema:
 </OUTPUT_FORMAT>
 `;
         }
-        // 🧠 CERVEAU 2 : Vers le Français (La NOUVELLE logique)
+        // 🧠 CERVEAU 2 : Vers le Français (La NOUVELLE logique ajoutée ici)
         else if (targetLang.toLowerCase() === 'français' || targetLang.toLowerCase() === 'francais') {
             systemPrompt = `
-<IDENTITY>
-You are the Traduct'Afriq Engine, an expert linguist translating Urban Dakar-Wolof (a mix of Wolof and French) INTO flawless, idiomatic French.
-</IDENTITY>
+<IDENTITY_AND_TASK>
+Tu es le moteur Traduct'Afriq, spécialisé dans la traduction du Wolof urbain (Dakar) vers un Français naturel et idiomatique.
+</IDENTITY_AND_TASK>
+
+<INPUT_CHALLENGES_AND_STT_ERRORS>
+Le texte source (Wolof) peut provenir d'une dictée vocale imparfaite (Speech-to-Text).
+- Méfie-toi des homophones français absurdes (ex: "mangue fille" = "maa ngi fi", "nanga dave" = "nanga def"). Décode l'intention phonétique en Wolof avant de traduire.
+</INPUT_CHALLENGES_AND_STT_ERRORS>
 
 <TRANSLATION_RULES>
-1. UNDERSTAND THE THIRD CODE: The input text will likely be "Dakar-Wolof" (containing French loanwords mixed with Wolof syntax like "Dama wara télécharger fichier bi"). Understand this code-switching perfectly.
-2. TRANSLATE IDIOMS: Do not translate Wolof hyperboles literally. 
-   - Example: "Xiif baa ngi may rey" -> "Je meurs de faim" (NOT "La faim me tue").
-   - Example: "Dama sonn" -> "Je suis fatigué".
-3. TONE: Provide a natural, professional yet conversational French translation suitable for a modern SaaS app.
-4. TYPO TOLERANCE: Wolof orthography varies (e.g., 'xale' vs 'khalé', 'ceeb' vs 'thiéb'). Be smart and infer the correct meaning regardless of spelling.
+1. TRADUCTION INTENTIONNELLE : Ne traduis pas littéralement si cela donne un français lourd (ex: "Xiif baa ngi may rey" -> "J'ai très faim").
+2. TONALITÉ : Adapte le registre. Reflète la politesse wolof en français si nécessaire.
 </TRANSLATION_RULES>
 
 <OUTPUT_FORMAT>
-Return ONLY a JSON object exactly matching this schema. Since the target is French, the phonetic_string must simply be the exact same as the translation (no phonetic hack needed for French TTS).
+Return ONLY a JSON object exactly matching this schema:
 {
-  "semantic_analysis": "<Briefly state the Wolof idioms or code-switching detected>",
-  "translation": "<The final, flawless French string>",
-  "phonetic_string": "<Copy the French translation exactly>"
+  "semantic_analysis": "<Explique brièvement ton choix de traduction>",
+  "translation": "<La traduction finale en français naturel>",
+  "phonetic_string": "<Copie exactement la traduction française ici>"
 }
 </OUTPUT_FORMAT>
 `;
         } else {
-            // Fallback pour l'anglais ou autre
-            systemPrompt = `Translate the following text into ${targetLang}. Return JSON: {"semantic_analysis": "Standard translation", "translation": "...", "phonetic_string": "..."}`;
+            // Fallback pour l'anglais ou autre (Syntaxe corrigée)
+            systemPrompt = `Translate the following text into ${targetLang}. Return JSON: { "semantic_analysis": "Standard translation", "translation": "...", "phonetic_string": "..." }`;
         }
 
         // Appel à l'API OpenAI
@@ -107,7 +114,7 @@ Return ONLY a JSON object exactly matching this schema. Since the target is Fren
             model: "gpt-4o",
             messages: [
                 { role: "system", content: systemPrompt },
-                { role: "user", content: `Translate this text (Source: ${sourceLang}): ${text}` }
+                { role: "user", content: `Translate this text (Source: ${sourceLang || 'auto'}): ${text}` }
             ],
             temperature: 0.2,
             response_format: { type: "json_object" },

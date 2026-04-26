@@ -1,8 +1,12 @@
 import React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ArrowUp, Paperclip, Square, X, StopCircle, Mic, Globe, BrainCog, FolderCode } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X, StopCircle, Mic, Globe, BrainCog, FolderCode, Zap, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import Siriwave from "react-siriwave";
+import { useAuth } from '@clerk/nextjs';
+import { getGuestUsedCredits } from "@/lib/utils";
+import Link from "next/link";
 
 // Utility function for className merging
 const cn = (...classes: (string | undefined | null | false)[]) => classes.filter(Boolean).join(" ");
@@ -164,26 +168,28 @@ Button.displayName = "Button";
 interface VoiceRecorderProps {
     isRecording: boolean;
     duration: number;
-    visualizerBars?: number;
 }
 const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     isRecording,
     duration,
-    visualizerBars = 32,
 }) => {
+    const [amplitude, setAmplitude] = React.useState(0);
 
-    const getBarStyle = (index: number): React.CSSProperties => {
-        // Deterministic pseudo-variation to avoid hydration mismatches.
-        const seed = Math.abs(Math.sin((index + 1) * 12.9898));
-        const height = Math.max(15, Math.round((seed % 1) * 100));
-        const duration = 0.5 + ((index * 37) % 50) / 100;
+    React.useEffect(() => {
+        let interval: ReturnType<typeof setInterval> | null = null;
 
-        return {
-            height: `${height}%`,
-            animationDelay: `${index * 0.05}s`,
-            animationDuration: `${duration.toFixed(2)}s`,
+        if (isRecording) {
+            interval = setInterval(() => {
+                setAmplitude(Math.random() * 2.5);
+            }, 100);
+        } else {
+            setAmplitude(0);
+        }
+
+        return () => {
+            if (interval) clearInterval(interval);
         };
-    };
+    }, [isRecording]);
 
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
@@ -194,23 +200,44 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     return (
         <div
             className={cn(
-                "flex flex-col items-center justify-center w-full transition-all duration-300 py-3",
-                isRecording ? "opacity-100" : "opacity-0 h-0"
+                "fixed z-50 flex flex-col items-center justify-center transition-all duration-300 ease-in-out pointer-events-none",
+                isRecording ? "opacity-100" : "opacity-0 scale-95",
+                "inset-0 bg-[#1F2023]/80 backdrop-blur-md",
+                "md:inset-auto md:top-12 md:left-1/2 md:-translate-x-1/2 md:bg-[#1F2023] md:px-12 md:py-6 md:rounded-[2rem] md:shadow-2xl md:border md:border-[#333333] md:backdrop-blur-none"
             )}
         >
-            <div className="flex items-center gap-2 mb-3">
-                <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                <span className="font-mono text-sm text-white/80">{formatTime(duration)}</span>
-            </div>
-            <div className="w-full h-10 flex items-center justify-center gap-0.5 px-4">
-                {[...Array(visualizerBars)].map((_, i) => (
-                    <div
-                        key={i}
-                        className="w-0.5 rounded-full bg-white/50 animate-pulse"
-                        style={getBarStyle(i)}
-                    />
-                ))}
-            </div>
+            {isRecording && (
+                <div className="flex flex-col items-center gap-4 pointer-events-auto">
+                    <div className="relative">
+                        <div className="absolute inset-0 rounded-full bg-[#3B82F6]/20 animate-ping" />
+                        <div className="relative z-10 rounded-full border-2 border-[#3B82F6] bg-[#2E3033] p-4 text-[#60A5FA]">
+                            <Mic className="h-6 w-6" />
+                        </div>
+                    </div>
+
+                    <div className="h-[100px] w-[300px] overflow-hidden md:w-[400px] flex items-center justify-center">
+                        <Siriwave
+                            theme="ios9"
+                            width={400}
+                            height={100}
+                            speed={0.1}
+                            amplitude={amplitude}
+                            autostart
+                        />
+                    </div>
+
+                    <div className="flex items-center gap-2 rounded-full border border-[#444444] bg-[#2E3033] px-4 py-1.5">
+                        <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                        <span className="font-mono text-sm font-medium tracking-wider text-white">
+                            {formatTime(duration)}
+                        </span>
+                    </div>
+
+                    <p className="mt-2 text-sm text-white/50 animate-pulse md:hidden">
+                        Listening to pronunciation...
+                    </p>
+                </div>
+            )}
         </div>
     );
 };
@@ -434,6 +461,15 @@ interface PromptInputBoxProps {
 export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref: React.Ref<HTMLDivElement>) => {
     const { onSend = () => { }, isLoading = false, placeholder = "Type your message here...", className } = props;
     const [input, setInput] = React.useState("");
+    const [guestRemaining, setGuestRemaining] = React.useState(4);
+    const [memberCredits, setMemberCredits] = React.useState(50);
+    const { isLoaded, isSignedIn } = useAuth();
+
+    React.useEffect(() => {
+        const used = getGuestUsedCredits();
+        setGuestRemaining(Math.max(0, 4 - used));
+    }, []);
+
     const [files, setFiles] = React.useState<File[]>([]);
     const [filePreviews, setFilePreviews] = React.useState<{ [key: string]: string }>({});
     const [selectedImage, setSelectedImage] = React.useState<string | null>(null);
@@ -780,6 +816,29 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
                                 />
                             </button>
                         </PromptInputAction>
+
+                        <div className="flex items-center ml-2 border-l border-[#444444] pl-3">
+                            {!isLoaded ? (
+                                <div className="flex items-center justify-center w-8">
+                                    <Loader2 className="w-4 h-4 text-[#9CA3AF] animate-spin" />
+                                </div>
+                            ) : isSignedIn ? (
+                                <Link href="/pricing" className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 border border-[#444444] rounded-full shadow-inner hidden min-[400px]:flex">
+                                    <Zap className="w-3.5 h-3.5 text-accent group-hover:fill-accent transition-colors" />
+                                    <span className="text-xs font-semibold text-accent">
+                                        {memberCredits}
+                                    </span>
+                                </Link>
+                            ) : (
+                                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 border border-[#444444] rounded-full shadow-inner hidden min-[400px]:flex">
+                                    <Zap className="w-3.5 h-3.5 text-accent group-hover:fill-accent transition-colors" />
+                                    <span className="text-xs font-semibold text-accent">
+                                        {guestRemaining}
+                                        <span className="hidden sm:inline"> essais libres</span>
+                                    </span>
+                                </div>
+                            )}
+                        </div>
 
                         {/* <div className="flex items-center">
                             <button

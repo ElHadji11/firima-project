@@ -2,22 +2,25 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { SignInButton, SignUpButton, UserButton, useAuth } from '@clerk/nextjs';
-import { Zap, Loader2 } from "lucide-react";
-import { getGuestUsedCredits } from "@/lib/utils";
+import { SignInButton, SignUpButton, SignOutButton, useAuth, useUser } from '@clerk/nextjs';
+import { Loader2, User } from "lucide-react";
 // 🚨 IMPORT DU BOUTON SIDEBAR
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export default function Header() {
     const [mounted, setMounted] = useState(false);
-    const [guestRemaining, setGuestRemaining] = useState(4);
-    const [memberCredits, setMemberCredits] = useState(50);
     const { isLoaded, isSignedIn } = useAuth();
+    const { user } = useUser();
 
     useEffect(() => {
         setMounted(true);
-        const used = getGuestUsedCredits();
-        setGuestRemaining(Math.max(0, 4 - used));
     }, []);
 
     if (!mounted) return <header className="h-16 w-full border-b border-border/50 bg-background" />;
@@ -52,23 +55,40 @@ export default function Header() {
                         </div>
                     ) : isSignedIn ? (
                         <div className="flex items-center gap-4 animate-in fade-in zoom-in duration-300">
-                            <Link href="/pricing" className="group flex items-center gap-1.5 px-3 py-1.5 bg-accent/10 border border-accent/20 rounded-full hover:bg-accent/20 transition-all">
-                                <Zap className="w-4 h-4 text-accent group-hover:fill-accent transition-colors" />
-                                <span className="text-sm font-semibold text-accent">
-                                    {memberCredits}
-                                </span>
-                            </Link>
-                            <UserButton />
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <button className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/20 text-primary transition-colors hover:bg-primary/30 font-bold outline-none ring-2 ring-transparent focus:ring-primary/50">
+                                        {user?.imageUrl ? (
+                                            <img src={user.imageUrl} alt="Profile" className="h-full w-full rounded-full object-cover" />
+                                        ) : (
+                                            user?.firstName?.charAt(0) || user?.emailAddresses?.[0]?.emailAddress?.charAt(0)?.toUpperCase() || <User size={18} />
+                                        )}
+                                    </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-56 rounded-xl border-border bg-card p-1 shadow-2xl">
+                                    <div className="mb-1 rounded-lg bg-muted/30 px-2 py-2.5">
+                                        <p className="text-sm font-medium text-foreground">
+                                            {user?.fullName || "Utilisateur"}
+                                        </p>
+                                        <p className="truncate text-xs text-muted-foreground">
+                                            {user?.primaryEmailAddress?.emailAddress}
+                                        </p>
+                                    </div>
+                                    <DropdownMenuSeparator className="bg-border/50" />
+                                    <DropdownMenuItem className="mt-1 cursor-pointer rounded-md p-2 text-foreground transition-colors focus:bg-accent/20 focus:text-accent-foreground">
+                                        Gérer le compte
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator className="bg-border/50" />
+                                    <DropdownMenuItem asChild className="cursor-pointer rounded-md p-2 text-destructive transition-colors focus:bg-destructive/10 focus:text-destructive">
+                                        <SignOutButton>
+                                            <button className="w-full text-left">Déconnexion</button>
+                                        </SignOutButton>
+                                    </DropdownMenuItem>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
                         </div>
                     ) : (
                         <div className="flex items-center gap-3 animate-in fade-in zoom-in duration-300">
-                            <div className=" items-center gap-1.5 px-3 py-1.5 bg-muted border border-border rounded-full shadow-inner hidden md:flex">
-                                <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-                                <span className="text-xs font-bold text-foreground/70">
-                                    {guestRemaining} essais libres
-                                </span>
-                            </div>
-
                             <SignInButton mode="modal">
                                 <button className="text-sm font-medium text-foreground/60 hover:text-primary transition-colors cursor-pointer hidden sm:block">
                                     Connexion

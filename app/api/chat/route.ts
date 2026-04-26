@@ -1,119 +1,229 @@
 import { NextResponse } from 'next/server';
-import OpenAI from 'openai';
-import { auth } from '@clerk/nextjs/server'; // Import de l'authentification côté serveur
-import { supabaseClient } from '@/lib/supabase'; // Ton utilitaire créé précédemment
+import { auth } from '@clerk/nextjs/server';
+import { supabaseClient } from '@/lib/supabase';
+// Remplacement d'OpenAI par l'écosystème Vercel AI / Google
+import { createVertex } from '@ai-sdk/google-vertex';
+import { generateObject, type ModelMessage, tool } from 'ai';
+import { z } from 'zod';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// On garde l'excellent prompt de Claude, mais on retire la section <OUTPUT_FORMAT> 
+// car Zod s'occupera de forcer la structure mathématiquement.
+const SYSTEM_PROMPT = `
+<IDENTITY>
+Tu es Firima, l'assistante IA premium de Traduct'Afriq, basée à Dakar, Sénégal.
+Tu parles couramment le français et le wolof urbain.
+</IDENTITY>
+
+<AUDIO_LISTENING_PROTOCOL>
+L'utilisateur peut t'envoyer directement des notes vocales.
+Tu as la capacité d'écouter ces fichiers audio natifs.
+Écoute très attentivement les nuances du Wolof et du Français.
+Si la qualité audio est mauvaise, déduis le sens logique.
+</AUDIO_LISTENING_PROTOCOL>
+
+<RESPONSE_RULES>
+- Si l'utilisateur parle en wolof -> réponds uniquement en wolof.
+- Ne fournis une traduction française que si l'utilisateur la demande.
+- Si l'utilisateur parle en français → réponds en français avec expressions wolof si pertinent.
+- Sois chaleureux et naturel, comme un ami sénégalais bilingue.
+</RESPONSE_RULES>
+
+<PHONETIC_OUTPUT_RULES>
+- Le champ phonetic_string doit être écrit pour une prononciation française (TTS OpenAI voix Nova).
+- Réécris le wolof de façon phonétique: jerejef -> dié-ré-dièf, waaw -> waou, ñun -> nioune, cëy -> thièye, xale -> khalé.
+- Si la réponse contient du français et du wolof, ne conserve que la partie wolof dans phonetic_string.
+- N'ajoute pas d'explications dans phonetic_string.
+</PHONETIC_OUTPUT_RULES>
+
+<RULES>
+1. FOCUS LOCAL : Si on te pose une question d'actualité, de sport ou de culture, privilégie TOUJOURS le contexte sénégalais et ouest-africain.
+2. TEMPS RÉEL : Utilise ton outil 'search_internet' dès qu'une question porte sur un événement récent.
+3. SÉCURITÉ STRICTE (CRITIQUE) : Tu dois REFUSER CATÉGORIQUEMENT de répondre à toute question ou demande impliquant :
+   - Le suicide ou l'automutilation (si détecté, propose des mots de soutien et conseille de chercher de l'aide).
+   - La violence, le terrorisme, ou la haine.
+   - Des activités illégales.
+   Si un utilisateur aborde ces sujets, réponds avec empathie mais fermeté que tu ne peux pas l'aider sur ce sujet, et change de conversation.
+</RULES>
+`.trim();
 
 export async function POST(req: Request) {
     try {
-        // 1. VÉRIFICATION DE L'IDENTITÉ (CLERK)
-        const { userId, getToken } = await auth();
+        const vertex = createVertex({
+            project: 'projet-firima', // Votre ID de projet
+            location: 'us-central1',  // La région par défaut recommandée
+        });
 
-        if (!userId) {
-            return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
+        const { userId, getToken } = await auth();
+        let supabase: Awaited<ReturnType<typeof supabaseClient>> | null = null;
+
+        if (userId) {
+            const token = await getToken({ template: 'supabase' });
+            if (token) {
+                supabase = await supabaseClient(token);
+            }
         }
 
-        // 2. CRÉATION DU LIEN SÉCURISÉ AVEC SUPABASE
-        const token = await getToken({ template: 'supabase' });
-        const supabase = await supabaseClient(token as string);
-
-        // 3. LECTURE DE LA REQUÊTE FRONTEND
         const body = await req.json();
-        const messages = body.messages || [];
-        let chatId = body.chatId || null; // Le frontend nous dira si on est dans un vieux chat
+        const rawMessages: {
+            role: "user" | "assistant";
+            content: string;
+            audioData?: string;
+            audioMimeType?: string;
+        }[] = body.messages || [];
+        let chatId: string | null = body.chatId || null;
 
-        const lastUserMessage = messages[messages.length - 1].content;
+        if (!rawMessages.length) {
+            return NextResponse.json({ error: "Aucun message fourni." }, { status: 400 });
+        }
 
-        // 4. GESTION DU CHAT DANS LA BASE DE DONNÉES
-        if (!chatId) {
-            // C'est une nouvelle conversation ! On crée un "Dossier" dans Supabase
-            // On génère un titre basé sur les premiers mots de l'utilisateur (max 30 caractères)
-            const title = lastUserMessage.substring(0, 30) + (lastUserMessage.length > 30 ? '...' : '');
+        const formattedMessages: ModelMessage[] = rawMessages.map((message) => {
+            if (message.role === 'user' && message.audioData) {
+                return {
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: "L'utilisateur a envoyé cette note vocale. Écoute-la attentivement pour formuler ta réponse.",
+                        },
+                        {
+                            type: 'file' as const,
+                            data: message.audioData,
+                            mediaType: message.audioMimeType || 'audio/webm',
+                        },
+                    ],
+                };
+            }
 
-            const { data: newChat, error: chatError } = await supabase
+            if (message.role === 'assistant') {
+                return {
+                    role: 'assistant',
+                    content: message.content,
+                };
+            }
+
+            return {
+                role: 'user',
+                content: message.content,
+            };
+        });
+
+        const lastUserMessage = rawMessages[rawMessages.length - 1].content || 'Message vocal';
+
+        // Créer un nouveau chat uniquement pour les utilisateurs authentifiés.
+        if (supabase && userId && !chatId) {
+            const title = lastUserMessage.substring(0, 40) || "Nouveau chat";
+            const { data: newChat, error } = await supabase
                 .from('chats')
-                .insert([{ user_id: userId, title: title }])
+                .insert([{ user_id: userId, title }])
                 .select()
                 .single();
 
-            if (chatError) throw new Error("Erreur création chat Supabase");
+            if (error || !newChat) {
+                console.error("Erreur création chat:", error);
+                return NextResponse.json({ error: "Impossible de créer le chat." }, { status: 500 });
+            }
             chatId = newChat.id;
         }
 
-        // 5. SAUVEGARDE DU MESSAGE DE L'UTILISATEUR
-        await supabase.from('messages').insert([{
-            chat_id: chatId,
-            role: 'user',
-            content: lastUserMessage
-        }]);
+        // Sauvegarder le message utilisateur uniquement si un chat persistant existe.
+        if (supabase && chatId) {
+            await supabase.from('messages').insert([{
+                chat_id: chatId,
+                role: 'user',
+                content: lastUserMessage
+            }]);
+        }
 
-        // 6. APPEL À OPENAI (Génération de la réponse)
-        // (J'ai repris ton prompt système exact)
-        const systemPrompt = `
-<IDENTITY>
-Tu es l'Assistant Virtuel de Traduct'Afriq. Tu es un expert bilingue chaleureux et professionnel. 
-L'utilisateur va te parler (soit en Français, soit en Wolof). Tu dois lui répondre de manière utile en utilisant le "Dakar-Wolof" (le code urbain du Sénégal).
-Si l'utilisateur envoie une image, analyse-la et réponds à sa question en Dakar-Wolof.
-</IDENTITY>
+        // Appel à Gemini via Vercel AI SDK (remplace l'appel OpenAI)
+        const { object } = await generateObject({
+            model: vertex('gemini-2.5-flash'), // Utilise désormais Vertex AI
+            system: SYSTEM_PROMPT,
+            messages: formattedMessages,
+            
+            // L'intégration de Tavily
+            // @ts-ignore : L'interface generateObject peut ne pas typer explicitement tools selon la version du SDK
+            tools: {
+                search_internet: tool({
+                    description: "Chercher des informations en temps réel sur internet (actualité, météo, sport, surtout au Sénégal).",
+                    parameters: z.object({
+                        query: z.string().describe("La requête de recherche optimisée (ex: Actualité politique Dakar aujourd'hui)"),
+                    }),
+                    // @ts-expect-error : Contournement du mismatch de type entre Zod/AI SDK pour la fonction execute
+                    execute: async ({ query }: { query: string }) => {
+                        console.log(`🔍 Firima cherche sur internet : ${query}`);
+                        
+                        try {
+                            const response = await fetch('https://api.tavily.com/search', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${process.env.TAVILY_API_KEY}`
+                                },
+                                body: JSON.stringify({
+                                    query: query,
+                                    search_depth: "basic",
+                                    include_answer: true,
+                                    days: 5 // Limite aux infos des 5 derniers jours pour la fraîcheur
+                                })
+                            });
+                            
+                            const data = await response.json();
+                            
+                            if (!data.results || data.results.length === 0) {
+                                return "Aucune information récente trouvée sur le web pour cette recherche.";
+                            }
 
-<KNOWLEDGE_BASE_RULES>
-1. VOCABULARY TIERS: Utilise le Tier 1 (Terre-à-terre : lekk, dem, jappale). N'utilise JAMAIS le Wolof profond (Tier 3).
-2. FRENCH FALLBACK: Pour les termes techniques, modernes ou administratifs (ex: entreprise, dossier, ordinateur, application), GARDE LE MOT FRANÇAIS et applique la grammaire Wolof.
-3. ASPECT SYNTAX: Utilise "Maa ngi" pour le présent continu, "Dafa" pour les états/explications.
-4. TONE: Sois direct, utile, et naturel.
-</KNOWLEDGE_BASE_RULES>
+                            // Retourne un résumé clair des articles trouvés à Gemini
+                            return data.results.map((r: any) => `Titre: ${r.title}\nContenu: ${r.content}`).join('\n\n');
+                        } catch (e) {
+                            console.error("Erreur Tavily:", e);
+                            return "Erreur lors de la recherche sur internet. Fais de ton mieux avec tes connaissances actuelles.";
+                        }
+                    },
+                }),
+            },
+            
+            // maxSteps est crucial : il permet à l'IA de faire la recherche PUIS de générer le JSON
+            // @ts-ignore
+            maxSteps: 2, 
 
-<VISION_PROTOCOL>
-When analyzing an image, you must be EXTREMELY LITERAL AND FACTUAL.
-1. NO POETRY OR METAPHORS: Do not invent feelings (e.g., "sama xol..."). Do not invent objects that are not there (e.g., "solay bu weex").
-2. USE TIER 1 VOCABULARY: Describe the scene simply. For a farm or nature scene, use basic words like 'tool' (field/farm), 'jant' (sun), 'gàncax' / 'ñax' (plants/grass), 'xeer' (stone).
-3. KEEP IT BRIEF: A simple, natural Dakarois reaction to the image (e.g., "Photo bi dafay wone tool bu rafet ak jant biy sow...").
-</VISION_PROTOCOL>
-
-<TTS_PHONETIC_GUIDE>
-Tu dois générer une "phonetic_string" optimisée pour la voix TTS française Nova d'OpenAI.
-- Pour les mots WOLOF : transforme 'x' en 'kh', 'c' en 'tch', 'j' en 'dj', 'ñ' en 'gn', 'ë' en 'eu' (ex: "xale" -> "khalé").
-- Pour les mots FRANÇAIS dans la phrase : Laisse-les INTACTS (ex: "entreprise", "dossier").
-</TTS_PHONETIC_GUIDE>
-
-<OUTPUT_FORMAT>
-Return ONLY a valid JSON object matching this schema:
-{
-  "reply": "<Ta réponse naturelle en Dakar-Wolof orthographiée correctement>",
-  "phonetic_string": "<La version phonétique secrète pour le moteur TTS>"
-}
-</OUTPUT_FORMAT>
-`;
-        const apiMessages = [{ role: "system", content: systemPrompt }, ...messages];
-
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: apiMessages,
-            temperature: 0.7,
-            response_format: { type: "json_object" },
+            // Le Schéma Zod remplace le prompt JSON de Claude. C'est strict et typé.
+            schema: z.object({
+                reply: z.string().describe("La réponse complète et naturelle à afficher à l'utilisateur (si tu as utilisé internet, mentionne-le subtilement)"),
+                phonetic_string: z.string().describe("La phrase exacte réécrite phonétiquement pour un synthétiseur vocal français. Exemples: 'jerejef' devient 'dié-ré-dièf'. Ne mets que le wolof dans cette chaîne."),
+                detected_language: z.enum(["wolof", "french", "mixed"]).describe("La langue détectée de l'utilisateur")
+            }),
         });
 
-        const rawJson = completion.choices[0].message.content || "{}";
-        const parsedResponse = JSON.parse(rawJson);
-        const aiReply = parsedResponse.reply;
+        const aiReply = object.reply;
 
-        // 7. SAUVEGARDE DE LA RÉPONSE DE L'IA DANS SUPABASE
-        await supabase.from('messages').insert([{
-            chat_id: chatId,
-            role: 'assistant',
-            content: aiReply
-        }]);
+        // Sauvegarder la réponse IA uniquement si un chat persistant existe.
+        if (supabase && chatId) {
+            await supabase.from('messages').insert([{
+                chat_id: chatId,
+                role: 'assistant',
+                content: aiReply
+            }]);
+        }
 
-        // 8. ON RENVOIE LA RÉPONSE AU FRONTEND (AVEC LE CHAT ID !)
+        // Retourner l'objet JSON (plus besoin de parser manuellement)
         return NextResponse.json({
-            reply: aiReply,
-            phoneticAudio: parsedResponse.phonetic_string || aiReply,
-            chatId: chatId // Très important pour que le frontend mette à jour l'URL !
+            reply: object.reply,
+            phoneticAudio: object.phonetic_string,
+            detectedLanguage: object.detected_language,
+            chatId,
         });
 
-    } catch (error) {
-        console.error("Chat API Error:", error);
-        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    } catch (error: any) {
+        console.error("Erreur API chat:", error);
+
+        // Gestion de l'erreur de Quota / Rate limit
+        if (error?.statusCode === 429 || error?.message?.includes('429') || error?.message?.includes('Quota')) {
+             return NextResponse.json({ 
+                 error: "Je reçois trop de messages d'un coup ! Laissez-moi quelques secondes pour reprendre mon souffle." 
+             }, { status: 429 });
+        }
+
+        return NextResponse.json({ error: "Erreur interne du serveur." }, { status: 500 });
     }
 }
