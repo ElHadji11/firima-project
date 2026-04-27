@@ -1,1 +1,1 @@
-import { tool } from 'ai'; import { z } from 'zod'; tool({ description: 'test', parameters: z.object({ query: z.string() }), execute: async ({ query }) => { return query; } });
+import { tool } from 'ai'; import { z } from 'zod'; tool({ description: 'Recherche une information spécifique en fonction de la requête.', execute: async ({ query }: { query: string }) => { return query; }, inputSchema: z.object({ query: z.string() }) });
