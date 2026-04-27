@@ -17,7 +17,8 @@ import {
     Zap,
     Square,
     X,
-    Send
+    Send,
+    Sparkles
 } from "lucide-react";
 
 // Définition de la structure d'un message
@@ -62,6 +63,7 @@ export default function ChatTab() {
     const [audioDurationById, setAudioDurationById] = useState<Record<string, number>>({});
     const messageAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
     const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
+    const [isTtsLoading, setIsTtsLoading] = useState<string | null>(null);
 
     const [feedback, setFeedback] = useState<Record<string, 'like' | 'dislike' | null>>({});
     const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -97,6 +99,8 @@ export default function ChatTab() {
 
     // 2. EFFET MAGIQUE : Charger l'historique si on clique sur un ancien chat
     useEffect(() => {
+        let ignore = false;
+
         async function fetchOldMessages() {
             pauseAllMessageAudios();
             setAudioProgressById({});
@@ -108,7 +112,7 @@ export default function ChatTab() {
             }
 
             try {
-                setIsLoading(true);
+                if (!ignore) setIsLoading(true);
                 const token = await getToken({ template: 'supabase' });
                 const supabase = await supabaseClient(token as string);
 
@@ -120,7 +124,7 @@ export default function ChatTab() {
 
                 if (error) throw error;
 
-                if (data) {
+                if (!ignore && data) {
                     setMessages(
                         data.map((msg) => ({
                             id: String(msg.id),
@@ -132,11 +136,13 @@ export default function ChatTab() {
             } catch (error) {
                 console.error("Erreur chargement messages:", error);
             } finally {
-                setIsLoading(false);
+                if (!ignore) setIsLoading(false);
             }
         }
 
         fetchOldMessages();
+
+        return () => { ignore = true; };
     }, [currentChatId, isSignedIn, getToken]);
 
 
@@ -236,27 +242,6 @@ export default function ChatTab() {
         }
     };
 
-    // --- UTILITAIRES POUR LE WEBSOCKET AUDIO ---
-    function floatTo16BitPCM(float32Array: Float32Array): ArrayBuffer {
-        const buffer = new ArrayBuffer(float32Array.length * 2);
-        const view = new DataView(buffer);
-        let offset = 0;
-        for (let i = 0; i < float32Array.length; i++, offset += 2) {
-            let s = Math.max(-1, Math.min(1, float32Array[i]));
-            view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-        }
-        return buffer;
-    }
-
-    function arrayBufferToBase64(buffer: ArrayBuffer): string {
-        let binary = '';
-        const bytes = new Uint8Array(buffer);
-        for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        return window.btoa(binary);
-    }
-
     // 1. Copier le texte
     const handleCopy = async (id: string, text: string) => {
         try {
@@ -331,7 +316,6 @@ export default function ChatTab() {
         await handleSendMessage(editValue);
     };
 
-    // ==========================================
     const handleSendMessage = async (messageText: string, files?: File[], customHistory?: Message[]) => {
         if (isLoading) return; // Garde-fou anti-spam
 
@@ -452,8 +436,9 @@ export default function ChatTab() {
     };
 
     // Petite fonction pour jouer l'audio de la réponse via Nova
-    const playBotAudio = async (phoneticText: string) => {
+    const playBotAudio = async (msgId: string, phoneticText: string) => {
         if (!phoneticText) return;
+        setIsTtsLoading(msgId);
 
         try {
             // 1. Nettoyage de l'audio précédent
@@ -512,6 +497,8 @@ export default function ChatTab() {
             setIsBotSpeaking(false);
             // Utile si les navigateurs bloquent l'autoplay (très fréquent sur iOS/Safari)
             alert("Erreur de lecture audio. Si vous êtes sur iPhone, vérifiez que le mode silencieux est désactivé.");
+        } finally {
+            setIsTtsLoading(null);
         }
     };
 
@@ -696,12 +683,13 @@ export default function ChatTab() {
                                                         <div className="flex flex-wrap items-center gap-1 mt-2">
                                                             {/* Écouter la réponse */}
                                                             <button
-                                                                onClick={() => playBotAudio(msg.phoneticAudio || msg.content)}
-                                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-background/50 text-foreground/70 hover:bg-background hover:text-primary transition-all shadow-sm border border-border/50 text-xs font-medium mr-1"
+                                                                onClick={() => playBotAudio(msg.id, msg.phoneticAudio || msg.content)}
+                                                                disabled={isTtsLoading === msg.id}
+                                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-background/50 text-foreground/70 transition-all shadow-sm border border-border/50 text-xs font-medium mr-1 ${isTtsLoading === msg.id ? 'opacity-50 cursor-wait' : 'hover:bg-background hover:text-primary'}`}
                                                                 title="Écouter la réponse"
                                                             >
-                                                                <Volume2 className="w-3.5 h-3.5" />
-                                                                Écouter
+                                                                {isTtsLoading === msg.id ? <LoadingState /> : <Volume2 className="w-3.5 h-3.5" />}
+                                                                {isTtsLoading === msg.id ? "Chargement..." : "Écouter"}
                                                             </button>
 
                                                             {/* Copier */}
@@ -761,148 +749,146 @@ export default function ChatTab() {
                         )))}
 
                     {isLoading && (
-                        <LoadingState />
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="flex justify-start"
+                        >
+                            <div className="flex gap-1 max-w-[80%] flex-row">
+                                <div className="flex-shrink-0 size-10 rounded-full flex items-center justify-center ">
+                                    <svg width="24" height="24" viewBox="0 0 100 100" fill="none" stroke="currentColor" strokeWidth="20" strokeLinecap="round" strokeLinejoin="round" className="text-primary text-opacity-100">
+                                        <path d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15" />
+                                    </svg>
+                                </div>
+                                <div className="p-4 rounded-2xl bg-muted border border-border rounded-tl-none flex items-center justify-center min-w-[60px] min-h-[44px]">
+                                    <motion.div className="flex items-center gap-1.5">
+                                        <motion.div animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.8, ease: "easeInOut", delay: 0 }} className="w-2 h-2 rounded-full bg-primary/70" />
+                                        <motion.div animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.8, ease: "easeInOut", delay: 0.15 }} className="w-2 h-2 rounded-full bg-primary/70" />
+                                        <motion.div animate={{ y: [0, -4, 0] }} transition={{ repeat: Infinity, duration: 0.8, ease: "easeInOut", delay: 0.3 }} className="w-2 h-2 rounded-full bg-primary/70" />
+                                    </motion.div>
+                                </div>
+                            </div>
+                        </motion.div>
                     )}
                     <div ref={messagesEndRef} />
                 </div>
 
                 {/* ZONE DE SAISIE & VOICE MODE */}
-                <div className="relative flex min-h-[120px] items-end justify-center bg-gradient-to-t from-card to-transparent p-4">
+                <div className="relative flex min-h-[140px] w-full items-end justify-center bg-gradient-to-t from-background via-background/80 to-transparent p-4 pb-6">
                     <AnimatePresence mode="wait">
-                        {isUserVoiceMode ?
+                        {isUserVoiceMode ? (
                             <motion.div
                                 key="user-voice-mode"
-                                initial={{ opacity: 0, y: 20, scale: 0.9 }}
+                                initial={{ opacity: 0, y: 30, scale: 0.95 }}
                                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 20, scale: 0.9 }}
-                                transition={{ duration: 0.4, ease: "easeOut" }}
-                                className="mx-auto flex w-full max-w-md flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-card/60 p-6 shadow-2xl backdrop-blur-md relative"
+                                exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                                transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                                className="mx-auto flex w-full max-w-lg flex-col items-center justify-center gap-5 rounded-3xl border border-primary/20 bg-card/80 p-6 shadow-[0_8px_30px_rgb(0,0,0,0.12)] backdrop-blur-xl supports-[backdrop-filter]:bg-card/40 relative overflow-hidden"
                             >
+                                {/* Subtle background pulse */}
+                                <div className="absolute inset-0 bg-primary/5 animate-pulse pointer-events-none" />
 
-
-                                {/* L'animation des ondes */}
-                                <div className="flex gap-[3px] h-8 items-end">
-                                    {Array.from({ length: 15 }).map((_, i) => (
-                                        <motion.span
-                                            key={i}
-                                            className="w-1.5 rounded-full bg-primary"
-                                            initial={{ height: 4 }}
-                                            animate={{ height: [4, 16 + Math.random() * 12, 4] }}
-                                            transition={{
-                                                duration: 0.6 + Math.random() * 0.4,
-                                                repeat: Infinity,
-                                                delay: i * 0.05,
-                                            }}
-                                        />
-                                    ))}
+                                {/* Header text */}
+                                <div className="flex items-center gap-2 relative z-10">
+                                    <span className="relative flex h-3 w-3">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-destructive opacity-75"></span>
+                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-destructive"></span>
+                                    </span>
+                                    <span className="text-sm font-semibold tracking-wide text-foreground/80">Enregistrement en cours...</span>
                                 </div>
 
-                                {/* LES DEUX BOUTONS CÔTE À CÔTE */}
-                                <div className="mt-4 flex w-full max-w-[280px] items-center justify-between gap-3">
+                                {/* SIDE-BY-SIDE BUTTONS */}
+                                <div className="flex w-full max-w-[320px] items-center justify-center gap-4 relative z-10 mt-2">
                                     <button
-                                        type="button" // <-- CRUCIAL ICI
+                                        type="button"
                                         // onClick={cancelLiveRecording}
-                                        className="flex flex-1 items-center justify-center gap-2 rounded-full border border-border bg-background px-4 py-2.5 text-muted-foreground transition-all hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                                        className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-border bg-background/50 backdrop-blur-sm px-4 py-3 text-muted-foreground transition-all duration-300 hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive hover:shadow-sm"
                                     >
                                         <X className="h-4 w-4" />
-                                        <span className="text-sm font-medium">Arrêter</span>
-                                    </button>
-
-                                    <button
-                                        type="button" // <-- CRUCIAL ICI
-                                        // onClick={stopLiveRecording}
-                                        className="flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-4 py-2.5 text-primary-foreground shadow-md transition-all hover:bg-primary/90"
-                                    >
-                                        <span className="text-sm font-medium">Envoyer</span>
-                                        <Send className="h-4 w-4" />
+                                        <span className="text-sm font-bold">Arrêter</span>
                                     </button>
                                 </div>
                             </motion.div>
-                            : isBotSpeaking ? (
-                                <motion.div
-                                    key="speaking-indicator"
-                                    initial={{ opacity: 0, y: 20, scale: 0.9 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: 20, scale: 0.9 }}
-                                    transition={{ duration: 0.4, ease: "easeOut" }}
-                                    className="mx-auto flex w-full max-w-md flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-card/60 p-6 shadow-2xl backdrop-blur-md relative"
-                                >
-                                    <svg
-                                        width="40"
-                                        height="40"
-                                        viewBox="0 0 100 100"
-                                        fill="none"
-                                        strokeWidth="14"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        className="overflow-visible"
-                                    >
-                                        <defs>
-                                            <linearGradient id="firima-glow" x1="0%" y1="100%" x2="100%" y2="0%">
-                                                <stop offset="0%" stopColor="hsl(var(--primary))" />
-                                                <stop offset="100%" stopColor="hsl(var(--accent))" />
-                                            </linearGradient>
-                                            <filter id="f-glow" x="-50%" y="-50%" width="200%" height="200%">
-                                                <feGaussianBlur stdDeviation="6" result="blur" />
-                                                <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                                            </filter>
-                                        </defs>
-                                        <path
-                                            d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
-                                            className="stroke-muted"
-                                        />
-                                        <motion.path
-                                            d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
-                                            stroke="url(#firima-glow)"
-                                            filter="url(#f-glow)"
-                                            initial={{ pathLength: 0, opacity: 0.8 }}
-                                            animate={{ pathLength: 1, opacity: 1 }}
-                                            transition={{
-                                                pathLength: {
-                                                    duration: 1.5,
-                                                    ease: "easeInOut",
-                                                    repeat: Infinity,
-                                                    repeatType: "reverse",
-                                                    repeatDelay: 0.2,
-                                                },
-                                                opacity: { duration: 0.5, repeat: Infinity, repeatType: "reverse" },
-                                            }}
-                                        />
-                                    </svg>
 
-                                    <div className="flex flex-col items-center gap-1">
-                                        <span className="text-sm font-medium uppercase tracking-widest text-foreground">Firima parle...</span>
-                                        <span className="animate-pulse text-xs text-muted-foreground">Wolof natif</span>
+                        ) : isBotSpeaking ? (
+                            /* --- BOT IS SPEAKING MODE --- */
+                            <motion.div
+                                key="speaking-indicator"
+                                initial={{ opacity: 0, y: 30, scale: 0.95 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                                transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                                className="mx-auto flex w-full max-w-lg items-center justify-between gap-4 rounded-3xl border border-primary/20 bg-card/80 p-5 shadow-[0_8px_30px_rgb(0,0,0,0.12)] backdrop-blur-xl supports-[backdrop-filter]:bg-card/40 relative"
+                            >
+                                <div className="flex items-center gap-6 pl-4">
+                                    {/* Holographic glowing SVG */}
+                                    <div className="relative flex items-center justify-center w-12 h-12">
+                                        <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl animate-pulse" />
+                                        <svg width="48" height="48" viewBox="0 0 100 100" fill="none" strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" className="overflow-visible relative z-10">
+                                            <defs>
+                                                <linearGradient id="firima-glow-2" x1="0%" y1="100%" x2="100%" y2="0%">
+                                                    <stop offset="0%" stopColor="hsl(var(--primary))" />
+                                                    <stop offset="100%" stopColor="hsl(var(--accent))" />
+                                                </linearGradient>
+                                                <filter id="f-glow-2" x="-50%" y="-50%" width="200%" height="200%">
+                                                    <feGaussianBlur stdDeviation="4" result="blur" />
+                                                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                                                </filter>
+                                            </defs>
+                                            <path d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15" className="stroke-muted/30" />
+                                            <motion.path
+                                                d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
+                                                stroke="url(#firima-glow-2)"
+                                                filter="url(#f-glow-2)"
+                                                initial={{ pathLength: 0, opacity: 0.8 }}
+                                                animate={{ pathLength: 1, opacity: 1 }}
+                                                transition={{
+                                                    pathLength: { duration: 1.5, ease: "easeInOut", repeat: Infinity, repeatType: "reverse", repeatDelay: 0.2 },
+                                                    opacity: { duration: 0.5, repeat: Infinity, repeatType: "reverse" },
+                                                }}
+                                            />
+                                        </svg>
                                     </div>
 
-                                    <button
-                                        onClick={stopBotAudio}
-                                        className="absolute bottom-4 right-4 group flex items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-all hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive"
-                                    >
-                                        <StopCircle className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-destructive" />
-                                        <span className="text-xs font-medium text-muted-foreground group-hover:text-destructive hidden sm:inline">Interrompre</span>
-                                    </button>
-                                </motion.div>
-                            ) : (
-                                <motion.div
-                                    key="prompt-box"
-                                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                                    transition={{ duration: 0.3, ease: "easeInOut" }}
-                                    className="w-full flex items-end gap-2"
-                                >
-                                    {/* L'ancienne boîte reste intacte et prend toute la place possible */}
-                                    <div className="flex-1">
-                                        <PromptInputBox
-                                            onSend={handleSendMessage}
-                                            isLoading={isLoading}
-                                            placeholder="Tapel fi... (Tape ton message...)"
-                                        />
+                                    {/* Text Info */}
+                                    <div className="flex flex-col items-start gap-0.5">
+                                        <span className="text-sm font-bold uppercase tracking-widest text-foreground bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/60">Firima parle...</span>
+                                        <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                                            <Sparkles className="w-3 h-3 text-primary animate-pulse" />
+                                            Wolof natif
+                                        </span>
                                     </div>
-                                </motion.div>
-                            )
-                        }
+                                </div>
+
+                                {/* Floating Interrupt Button */}
+                                <button
+                                    onClick={stopBotAudio}
+                                    className="group flex items-center justify-center gap-2 rounded-2xl border border-border bg-background/50 px-4 py-3 h-full transition-all duration-300 hover:bg-destructive hover:border-destructive hover:shadow-md hover:shadow-destructive/20"
+                                >
+                                    <StopCircle className="h-5 w-5 text-muted-foreground transition-colors group-hover:text-destructive-foreground" />
+                                    <span className="text-sm font-bold text-muted-foreground group-hover:text-destructive-foreground hidden sm:inline">Interrompre</span>
+                                </button>
+                            </motion.div>
+
+                        ) : (
+                            /* --- DEFAULT TEXT INPUT MODE --- */
+                            <motion.div
+                                key="prompt-box"
+                                initial={{ opacity: 0, y: 20 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 20 }}
+                                transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                                className="w-full flex items-end gap-2 max-w-3xl mx-auto"
+                            >
+                                <div className="flex-1 w-full shadow-sm rounded-3xl overflow-hidden border border-border/50 bg-background/80 backdrop-blur-sm transition-all focus-within:shadow-md focus-within:border-primary/30">
+                                    <PromptInputBox
+                                        onSend={handleSendMessage}
+                                        isLoading={isLoading}
+                                        placeholder="Tapel fi... (Tape ton message...)"
+                                    />
+                                </div>
+                            </motion.div>
+                        )}
                     </AnimatePresence>
                 </div>
             </div >

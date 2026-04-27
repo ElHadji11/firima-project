@@ -3,7 +3,6 @@ import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ArrowUp, Paperclip, Square, X, StopCircle, Mic, Globe, BrainCog, FolderCode, Zap, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import Siriwave from "react-siriwave";
 import { useAuth } from '@clerk/nextjs';
 import { getGuestUsedCredits } from "@/lib/utils";
 import Link from "next/link";
@@ -164,83 +163,43 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 );
 Button.displayName = "Button";
 
-// VoiceRecorder Component
-interface VoiceRecorderProps {
-    isRecording: boolean;
-    duration: number;
-}
-const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
-    isRecording,
-    duration,
-}) => {
-    const [amplitude, setAmplitude] = React.useState(0);
+// InlineWaveform Component
+const InlineWaveform = ({ isRecording }: { isRecording: boolean }) => (
+    <div className="flex items-center gap-1 h-6 px-2">
+        {[...Array(12)].map((_, i) => (
+            <motion.div
+                key={i}
+                animate={{
+                    height: isRecording ? [4, 16, 8, 20, 4] : 4,
+                }}
+                transition={{
+                    repeat: Infinity,
+                    duration: 0.6,
+                    delay: i * 0.05,
+                }}
+                className="w-1 bg-red-500 rounded-full"
+            />
+        ))}
+    </div>
+);
 
-    React.useEffect(() => {
-        let interval: ReturnType<typeof setInterval> | null = null;
-
-        if (isRecording) {
-            interval = setInterval(() => {
-                setAmplitude(Math.random() * 2.5);
-            }, 100);
-        } else {
-            setAmplitude(0);
-        }
-
-        return () => {
-            if (interval) clearInterval(interval);
-        };
-    }, [isRecording]);
-
-    const formatTime = (seconds: number) => {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-    };
-
-    return (
-        <div
-            className={cn(
-                "fixed z-50 flex flex-col items-center justify-center transition-all duration-300 ease-in-out pointer-events-none",
-                isRecording ? "opacity-100" : "opacity-0 scale-95",
-                "inset-0 bg-[#1F2023]/80 backdrop-blur-md",
-                "md:inset-auto md:top-12 md:left-1/2 md:-translate-x-1/2 md:bg-[#1F2023] md:px-12 md:py-6 md:rounded-[2rem] md:shadow-2xl md:border md:border-[#333333] md:backdrop-blur-none"
-            )}
-        >
-            {isRecording && (
-                <div className="flex flex-col items-center gap-4 pointer-events-auto">
-                    <div className="relative">
-                        <div className="absolute inset-0 rounded-full bg-[#3B82F6]/20 animate-ping" />
-                        <div className="relative z-10 rounded-full border-2 border-[#3B82F6] bg-[#2E3033] p-4 text-[#60A5FA]">
-                            <Mic className="h-6 w-6" />
-                        </div>
-                    </div>
-
-                    <div className="h-[100px] w-[300px] overflow-hidden md:w-[400px] flex items-center justify-center">
-                        <Siriwave
-                            theme="ios9"
-                            width={400}
-                            height={100}
-                            speed={0.1}
-                            amplitude={amplitude}
-                            autostart
-                        />
-                    </div>
-
-                    <div className="flex items-center gap-2 rounded-full border border-[#444444] bg-[#2E3033] px-4 py-1.5">
-                        <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
-                        <span className="font-mono text-sm font-medium tracking-wider text-white">
-                            {formatTime(duration)}
-                        </span>
-                    </div>
-
-                    <p className="mt-2 text-sm text-white/50 animate-pulse md:hidden">
-                        Listening to pronunciation...
-                    </p>
-                </div>
-            )}
+// AudioAttachment Component
+const AudioAttachment = ({ url, onRemove }: { url: string; onRemove: () => void }) => (
+    <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 10 }}
+        className="flex items-center gap-3 bg-[#2E3033] border border-[#444444] rounded-2xl p-2 pr-4 self-start max-w-full"
+    >
+        <div className="bg-red-500/20 p-2 rounded-xl">
+            <Mic className="h-4 w-4 text-red-500" />
         </div>
-    );
-};
+        <audio src={url} controls className="h-8 w-48 custom-audio-player" />
+        <button onClick={onRemove} type="button" className="hover:bg-white/10 p-1 rounded-full transition-colors">
+            <X className="h-4 w-4 text-gray-400" />
+        </button>
+    </motion.div>
+);
 
 // ImageViewDialog Component
 interface ImageViewDialogProps {
@@ -341,10 +300,12 @@ const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                         disabled,
                     }}
                 >
-                    <div
-                        ref={ref}
+                    <motion.div
+                        layout
+                        transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                        ref={ref as React.Ref<HTMLDivElement>}
                         className={cn(
-                            "rounded-3xl border border-[#444444] bg-[#1F2023] p-2 shadow-[0_8px_30px_rgba(0,0,0,0.24)] transition-all duration-300",
+                            "rounded-3xl border border-[#444444] bg-[#1F2023]/90 backdrop-blur-md p-2 shadow-[0_8px_30px_rgba(0,0,0,0.24)] transition-colors duration-300",
                             isLoading && "border-red-500/70",
                             className
                         )}
@@ -353,7 +314,7 @@ const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                         onDrop={onDrop}
                     >
                         {children}
-                    </div>
+                    </motion.div>
                 </PromptInputContext.Provider>
             </TooltipProvider>
         );
@@ -489,6 +450,12 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
     const recordingTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
     const recordingDurationRef = React.useRef(0);
     const sendAfterStopRef = React.useRef(false);
+
+    const formatTime = (seconds: number) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    };
 
     const handleToggleChange = (value: string) => {
         if (value === "search") {
@@ -712,8 +679,8 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
                 isLoading={isLoading}
                 onSubmit={handleSubmit}
                 className={cn(
-                    "w-full bg-[#1F2023] border-[#444444] shadow-[0_8px_30px_rgba(0,0,0,0.24)] transition-all duration-300 ease-in-out",
-                    isRecording && "border-red-500/70",
+                    "w-full bg-[#1F2023] border-[#444444] shadow-[0_8px_30px_rgba(0,0,0,0.24)] overflow-hidden",
+                    isRecording && "border-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.1)]",
                     className
                 )}
                 disabled={isLoading || isRecording}
@@ -722,290 +689,172 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
             >
-                {files.length > 0 && !isRecording && (
-                    <div className="flex flex-wrap gap-2 p-0 pb-1 transition-all duration-300">
-                        {files.map((file, index) => (
-                            <div key={index} className="relative group">
-                                {file.type.startsWith("image/") && filePreviews[file.name] && (
-                                    <div
-                                        className="w-16 h-16 rounded-xl overflow-hidden cursor-pointer transition-all duration-300"
-                                        onClick={() => openImageModal(filePreviews[file.name])}
-                                    >
-                                        <img
-                                            src={filePreviews[file.name]}
-                                            alt={file.name}
-                                            className="h-full w-full object-cover"
-                                        />
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleRemoveFile(index);
-                                            }}
-                                            className="absolute top-1 right-1 rounded-full bg-black/70 p-0.5 opacity-100 transition-opacity"
-                                        >
-                                            <X className="h-3 w-3 text-white" />
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                )}
+                {/* Use layout prop to animate the container size changes smoothly */}
+                <motion.div layout className="flex flex-col gap-2">
 
-                {pendingVoicePreviewUrl && !isRecording && (
-                    <div className="mb-2 flex items-center gap-2 rounded-xl border border-[#444444] bg-[#24262A] px-3 py-2">
-                        <audio className="h-8 w-full" controls src={pendingVoicePreviewUrl} preload="metadata" />
-                        <button
-                            type="button"
-                            onClick={clearPendingVoice}
-                            className="rounded-full bg-black/40 p-1.5 text-white/80 hover:text-white"
-                            aria-label="Remove voice preview"
-                        >
-                            <X className="h-3.5 w-3.5" />
-                        </button>
-                    </div>
-                )}
-
-                <div
-                    className={cn(
-                        "transition-all duration-300",
-                        isRecording ? "h-0 overflow-hidden opacity-0" : "opacity-100"
-                    )}
-                >
-                    <PromptInputTextarea
-                        placeholder={
-                            showSearch
-                                ? "Search the web..."
-                                : showThink
-                                    ? "Think deeply..."
-                                    : showCanvas
-                                        ? "Create on canvas..."
-                                        : placeholder
-                        }
-                        className="text-base"
-                    />
-                </div>
-
-                <VoiceRecorder
-                    isRecording={isRecording}
-                    duration={recordingDuration}
-                />
-
-                <PromptInputActions className="flex items-center justify-between gap-2 p-0 pt-2">
-                    <div
-                        className={cn(
-                            "flex items-center gap-1 transition-opacity duration-300",
-                            isRecording ? "opacity-0 invisible h-0" : "opacity-100 visible"
-                        )}
-                    >
-                        <PromptInputAction tooltip="Upload image">
-                            <button
-                                onClick={() => uploadInputRef.current?.click()}
-                                className="flex h-8 w-8 text-[#9CA3AF] cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-gray-600/30 hover:text-[#D1D5DB]"
-                                disabled={isRecording}
+                    {/* Image Previews - Animates height and opacity */}
+                    <AnimatePresence mode="popLayout">
+                        {files.length > 0 && !isRecording && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10, height: 0 }}
+                                animate={{ opacity: 1, y: 0, height: "auto" }}
+                                exit={{ opacity: 0, y: 10, height: 0 }}
+                                className="flex flex-wrap gap-2 p-0 pb-1"
                             >
-                                <Paperclip className="h-5 w-5 transition-colors" />
-                                <input
-                                    ref={uploadInputRef}
-                                    type="file"
-                                    className="hidden"
-                                    onChange={(e) => {
-                                        if (e.target.files && e.target.files.length > 0) processFile(e.target.files[0]);
-                                        if (e.target) e.target.value = "";
-                                    }}
-                                    accept="image/*"
-                                />
-                            </button>
-                        </PromptInputAction>
+                                {files.map((file, index) => (
+                                    <motion.div
+                                        layout
+                                        key={file.name}
+                                        className="relative group h-16 w-16"
+                                    >
+                                        {filePreviews[file.name] && (
+                                            <div className="h-full w-full rounded-xl overflow-hidden border border-[#333] shadow-inner">
+                                                <img
+                                                    src={filePreviews[file.name]}
+                                                    alt={file.name}
+                                                    className="h-full w-full object-cover"
+                                                />
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleRemoveFile(index);
+                                                    }}
+                                                    className="absolute top-1 right-1 rounded-full bg-black/70 p-0.5 hover:bg-red-500 transition-colors"
+                                                >
+                                                    <X className="h-3 w-3 text-white" />
+                                                </button>
+                                            </div>
+                                        )}
+                                    </motion.div>
+                                ))}
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
 
-                        <div className="flex items-center ml-2 border-l border-[#444444] pl-3">
-                            {!isLoaded ? (
-                                <div className="flex items-center justify-center w-8">
-                                    <Loader2 className="w-4 h-4 text-[#9CA3AF] animate-spin" />
-                                </div>
-                            ) : isSignedIn ? (
-                                <Link href="/pricing" className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 border border-[#444444] rounded-full shadow-inner hidden min-[400px]:flex">
-                                    <Zap className="w-3.5 h-3.5 text-accent group-hover:fill-accent transition-colors" />
-                                    <span className="text-xs font-semibold text-accent">
-                                        {memberCredits}
-                                    </span>
-                                </Link>
+                    {/* Audio Attachment - Appears nicely inline where text goes */}
+                    <AnimatePresence mode="popLayout">
+                        {pendingVoicePreviewUrl && !isRecording && (
+                            <motion.div
+                                initial={{ opacity: 0, scale: 0.95, y: 5 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, y: 5 }}
+                                className="mb-1"
+                            >
+                                <AudioAttachment
+                                    url={pendingVoicePreviewUrl}
+                                    onRemove={clearPendingVoice}
+                                />
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    {/* Interaction Area: Morphs between Textarea and Waveform */}
+                    <div className="relative flex items-center min-h-[44px]">
+                        <AnimatePresence mode="wait">
+                            {isRecording ? (
+                                <motion.div
+                                    key="recording-ui"
+                                    initial={{ opacity: 0, x: -10 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, x: 10 }}
+                                    className="flex items-center justify-between w-full py-2 px-3 bg-red-500/5 rounded-2xl border border-red-500/10"
+                                >
+                                    <div className="flex items-center gap-4">
+                                        <div className="flex items-center gap-1.5">
+                                            <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+                                            <span className="font-mono text-red-500 text-xs font-bold tabular-nums">
+                                                {formatTime(recordingDuration)}
+                                            </span>
+                                        </div>
+                                        <InlineWaveform isRecording={isRecording} />
+                                    </div>
+                                    <p className="text-[10px] uppercase tracking-widest text-red-500/60 font-bold hidden sm:block">
+                                        Recording Audio
+                                    </p>
+                                </motion.div>
                             ) : (
-                                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 border border-[#444444] rounded-full shadow-inner hidden min-[400px]:flex">
-                                    <Zap className="w-3.5 h-3.5 text-accent group-hover:fill-accent transition-colors" />
-                                    <span className="text-xs font-semibold text-accent">
-                                        {guestRemaining}
-                                        <span className="hidden sm:inline"> essais libres</span>
-                                    </span>
-                                </div>
+                                <motion.div
+                                    key="textarea-ui"
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    exit={{ opacity: 0 }}
+                                    className="w-full"
+                                >
+                                    <PromptInputTextarea
+                                        placeholder={
+                                            showSearch ? "Search the web..." :
+                                                showThink ? "Think deeply..." :
+                                                    showCanvas ? "Create on canvas..." :
+                                                        placeholder
+                                        }
+                                        className="min-h-[44px] py-3 text-base leading-relaxed"
+                                    />
+                                </motion.div>
                             )}
+                        </AnimatePresence>
+                    </div>
+                </motion.div>
+
+                {/* Footer Actions */}
+                <PromptInputActions className="flex items-center justify-end gap-2 p-0 pt-2 border-t border-[#444444]/30 mt-1">
+                    <div className="flex items-center gap-2">
+                        <div className={cn(
+                            "flex items-center gap-1 transition-all duration-300",
+                            isRecording ? "opacity-0 -translate-x-2 pointer-events-none" : "opacity-100 translate-x-0"
+                        )}>
+                            <PromptInputAction tooltip="Upload image">
+                                <button
+                                    onClick={() => uploadInputRef.current?.click()}
+                                    className="flex h-8 w-8 text-[#9CA3AF] items-center justify-center rounded-full transition-colors hover:bg-white/5 hover:text-white"
+                                >
+                                    <Paperclip className="h-5 w-5" />
+                                    <input
+                                        ref={uploadInputRef}
+                                        type="file"
+                                        className="hidden"
+                                        onChange={(e) => {
+                                            if (e.target.files?.[0]) processFile(e.target.files[0]);
+                                            if (e.target) e.target.value = "";
+                                        }}
+                                        accept="image/*"
+                                    />
+                                </button>
+                            </PromptInputAction>
+                            {/* Credit Badges remain here */}
                         </div>
 
-                        {/* <div className="flex items-center">
-                            <button
-                                type="button"
-                                onClick={() => handleToggleChange("search")}
-                                className={cn(
-                                    "rounded-full transition-all flex items-center gap-1 px-2 py-1 border h-8",
-                                    showSearch
-                                        ? "bg-[#1EAEDB]/15 border-[#1EAEDB] text-[#1EAEDB]"
-                                        : "bg-transparent border-transparent text-[#9CA3AF] hover:text-[#D1D5DB]"
-                                )}
-                            >
-                                <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
-                                    <motion.div
-                                        animate={{ rotate: showSearch ? 360 : 0, scale: showSearch ? 1.1 : 1 }}
-                                        whileHover={{ rotate: showSearch ? 360 : 15, scale: 1.1, transition: { type: "spring", stiffness: 300, damping: 10 } }}
-                                        transition={{ type: "spring", stiffness: 260, damping: 25 }}
-                                    >
-                                        <Globe className={cn("w-4 h-4", showSearch ? "text-[#1EAEDB]" : "text-inherit")} />
-                                    </motion.div>
-                                </div>
-                                <AnimatePresence>
-                                    {showSearch && (
-                                        <motion.span
-                                            initial={{ width: 0, opacity: 0 }}
-                                            animate={{ width: "auto", opacity: 1 }}
-                                            exit={{ width: 0, opacity: 0 }}
-                                            transition={{ duration: 0.2 }}
-                                            className="text-xs overflow-hidden whitespace-nowrap text-[#1EAEDB] flex-shrink-0"
-                                        >
-                                            Search
-                                        </motion.span>
-                                    )}
-                                </AnimatePresence>
-                            </button>
-
-                            <CustomDivider />
-
-                            <button
-                                type="button"
-                                onClick={() => handleToggleChange("think")}
-                                className={cn(
-                                    "rounded-full transition-all flex items-center gap-1 px-2 py-1 border h-8",
-                                    showThink
-                                        ? "bg-[#8B5CF6]/15 border-[#8B5CF6] text-[#8B5CF6]"
-                                        : "bg-transparent border-transparent text-[#9CA3AF] hover:text-[#D1D5DB]"
-                                )}
-                            >
-                                <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
-                                    <motion.div
-                                        animate={{ rotate: showThink ? 360 : 0, scale: showThink ? 1.1 : 1 }}
-                                        whileHover={{ rotate: showThink ? 360 : 15, scale: 1.1, transition: { type: "spring", stiffness: 300, damping: 10 } }}
-                                        transition={{ type: "spring", stiffness: 260, damping: 25 }}
-                                    >
-                                        <BrainCog className={cn("w-4 h-4", showThink ? "text-[#8B5CF6]" : "text-inherit")} />
-                                    </motion.div>
-                                </div>
-                                <AnimatePresence>
-                                    {showThink && (
-                                        <motion.span
-                                            initial={{ width: 0, opacity: 0 }}
-                                            animate={{ width: "auto", opacity: 1 }}
-                                            exit={{ width: 0, opacity: 0 }}
-                                            transition={{ duration: 0.2 }}
-                                            className="text-xs overflow-hidden whitespace-nowrap text-[#8B5CF6] flex-shrink-0"
-                                        >
-                                            Think
-                                        </motion.span>
-                                    )}
-                                </AnimatePresence>
-                            </button>
-
-                            <CustomDivider />
-
-                            <button
-                                type="button"
-                                onClick={handleCanvasToggle}
-                                className={cn(
-                                    "rounded-full transition-all flex items-center gap-1 px-2 py-1 border h-8",
-                                    showCanvas
-                                        ? "bg-[#F97316]/15 border-[#F97316] text-[#F97316]"
-                                        : "bg-transparent border-transparent text-[#9CA3AF] hover:text-[#D1D5DB]"
-                                )}
-                            >
-                                <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
-                                    <motion.div
-                                        animate={{ rotate: showCanvas ? 360 : 0, scale: showCanvas ? 1.1 : 1 }}
-                                        whileHover={{ rotate: showCanvas ? 360 : 15, scale: 1.1, transition: { type: "spring", stiffness: 300, damping: 10 } }}
-                                        transition={{ type: "spring", stiffness: 260, damping: 25 }}
-                                    >
-                                        <FolderCode className={cn("w-4 h-4", showCanvas ? "text-[#F97316]" : "text-inherit")} />
-                                    </motion.div>
-                                </div>
-                                <AnimatePresence>
-                                    {showCanvas && (
-                                        <motion.span
-                                            initial={{ width: 0, opacity: 0 }}
-                                            animate={{ width: "auto", opacity: 1 }}
-                                            exit={{ width: 0, opacity: 0 }}
-                                            transition={{ duration: 0.2 }}
-                                            className="text-xs overflow-hidden whitespace-nowrap text-[#F97316] flex-shrink-0"
-                                        >
-                                            Canvas
-                                        </motion.span>
-                                    )}
-                                </AnimatePresence>
-                            </button>
-                        </div> */}
-                    </div>
-
-                    {isRecording && (
-                        <PromptInputAction tooltip="Stop recording">
+                        {isRecording && (
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-8 w-8 rounded-full bg-transparent hover:bg-gray-600/30 text-red-500 hover:text-red-400"
+                                className="h-8 w-8 rounded-full text-red-500 hover:bg-red-500/10 transition-all active:scale-90"
                                 onClick={stopRecording}
-                                disabled={isLoading}
                             >
-                                <StopCircle className="h-5 w-5 text-red-500" />
+                                <StopCircle className="h-5 w-5" />
                             </Button>
-                        </PromptInputAction>
-                    )}
+                        )}
 
-                    <PromptInputAction
-                        tooltip={
-                            isLoading
-                                ? "Stop generation"
-                                : isRecording
-                                    ? "Send voice message"
-                                    : pendingVoiceFile
-                                        ? "Send voice message"
-                                        : hasContent
-                                            ? "Send message"
-                                            : "Voice message"
-                        }
-                    >
                         <Button
                             variant="default"
                             size="icon"
                             className={cn(
-                                "h-8 w-8 rounded-full transition-all duration-200",
-                                isRecording
-                                    ? "bg-white hover:bg-white/80 text-[#1F2023]"
-                                    : hasContent
-                                        ? "bg-white hover:bg-white/80 text-[#1F2023]"
-                                        : "bg-transparent hover:bg-gray-600/30 text-[#9CA3AF] hover:text-[#D1D5DB]"
+                                "h-8 w-8 rounded-full transition-all duration-300 active:scale-90 bg-white  shadow-lg hover:bg-white/10 hover:text-black",
                             )}
                             onClick={() => {
                                 if (isRecording) sendWhileRecording();
                                 else if (hasContent) handleSubmit();
                                 else startRecording();
                             }}
-                            disabled={isLoading && !hasContent}
                         >
                             {isLoading ? (
-                                <Square className="h-4 w-4 fill-[#1F2023] animate-pulse" />
-                            ) : isRecording ? (
-                                <ArrowUp className="h-4 w-4 text-[#1F2023]" />
-                            ) : hasContent ? (
-                                <ArrowUp className="h-4 w-4 text-[#1F2023]" />
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (isRecording || hasContent) ? (
+                                <ArrowUp className="h-4 w-4 stroke-[3px]" />
                             ) : (
-                                <Mic className="h-5 w-5 text-[#1F2023] transition-colors" />
+                                <Mic className="h-4 w-4 stroke-[3px]" />
                             )}
                         </Button>
-                    </PromptInputAction>
+                    </div>
                 </PromptInputActions>
             </PromptInput>
 

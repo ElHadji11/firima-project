@@ -1,45 +1,46 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { supabaseClient } from '@/lib/supabase';
-import { createVertex } from '@ai-sdk/google-vertex';
+import { openai as aiProvider } from '@ai-sdk/openai'; // Renommé pour éviter le conflit
 import { generateText, type ModelMessage, tool } from 'ai';
 import { z } from 'zod';
+import OpenAI from 'openai'; // Import du client officiel pour la transcription
+
+// Initialisation du client OpenAI pour Whisper
+const openaiClient = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
 
 const SYSTEM_PROMPT = `
 <IDENTITY>
 Tu es Firima, l'assistante IA premium basée au Sénégal.
 Ta capacité spéciale : Tu comprends parfaitement le Wolof urbain, le français, et le franglais, mais TU RÉPONDS EXCLUSIVEMENT EN FRANÇAIS.
-Dès que l'utilisateur soumet un texte que tu identifies avec certitude (Verset du Coran, Hadith, Citation célèbre, Texte de loi) :
-1. IDENTIFICATION IMMÉDIATE : Donne la source précise (Ex: Sourate X, Verset Y) en début de réponse.
-2. ANALYSE COMPLÈTE : Donne directement son contexte historique, sa signification et ses implications.
-3. FORMATAGE : Utilise des blocs de citation pour le texte original et des listes à puces pour les points clés.
 NE DEMANDE JAMAIS "Veux-tu la signification ?". Agis comme un expert proactif.
-
-RÈGLE ANTI-HALLUCINATION : Si tu ne connais pas la réponse ou si un projet/concept n'existe pas, TU DOIS L'AVOUER. N'invente JAMAIS de faits ou de projets (ex: projet Kharit).
+RÈGLE ANTI-HALLUCINATION : Si tu ne connais pas la réponse, avoue-le. N'invente JAMAIS de faits.
 </IDENTITY>
 
-<DYNAMIC_VERBOSITY_&_TONE>
-1. QUESTIONS BANALES : Sois ultra-concise. 1 à 3 phrases maximum.
-2. ACTUALITÉS/RECHERCHES : Sois SYNTHÉTIQUE. Utilise le format "Flash Info" (bullet points denses).
-</DYNAMIC_VERBOSITY_&_TONE>
+<RECHERCHE_INTERNET>
+Si l'utilisateur pose une question sur l'actualité, les prix, ou l'immobilier (ex: studios à Dakar), TU DOIS utiliser l'outil 'search_internet' pour trouver les vraies annonces actuelles.
+</RECHERCHE_INTERNET>
 
 <OUTPUT_FORMAT>
-MÊME APRÈS AVOIR UTILISÉ L'OUTIL DE RECHERCHE, ta réponse finale doit IMPÉRATIVEMENT et UNIQUEMENT être un objet JSON valide.
+CRITIQUE : TU DOIS TOUJOURS RÉPONDRE AVEC UN JSON VALIDE.
+Même si le search_internet tool est utilisé, FORMATE TOUJOURS ta réponse finale en JSON.
 Structure exacte exigée :
 {
-  "reply": "Ta réponse complète formattée en Markdown",
+  "reply": "Ta réponse complète formattée en Markdown (inclus les détails de ta recherche, les prix et les quartiers ici)",
   "phonetic_string": "La phrase phonétique pour la synthèse vocale (sans les blocs markdown).",
-  "detected_language": "wolof" // ou "french" ou "mixed"
+  "detected_language": "french"
 }
+Ne retourne JAMAIS de texte brut. JAMAIS. Toujours du JSON valide.
 </OUTPUT_FORMAT>
 `.trim();
 
 export async function POST(req: Request) {
     try {
-        const vertex = createVertex({
-            project: 'projet-firima', // Ton ID de projet
-            location: 'us-central1',
-        });
+        if (!process.env.OPENAI_API_KEY) {
+            throw new Error("Clé API OpenAI manquante dans le fichier .env");
+        }
 
         const { userId, getToken } = await auth();
         let supabase: Awaited<ReturnType<typeof supabaseClient>> | null = null;
@@ -57,56 +58,105 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Aucun message fourni." }, { status: 400 });
         }
 
-        // Formatage des messages pour le SDK
-        const formattedMessages: ModelMessage[] = [
-            { role: 'system', content: SYSTEM_PROMPT }
-        ];
+        // ==========================================
+        // 1. TRANSCRIPTION AUDIO (WHISPER-1)
+        // ==========================================
+        let transcribedText = "";
+        const lastRawMessage = rawMessages[rawMessages.length - 1];
 
-        rawMessages.forEach((message) => {
-            if (message.role === 'user' && message.audioData) {
-                formattedMessages.push({
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: "Note vocale de l'utilisateur. Écoute attentivement." },
-                        { type: 'file', data: message.audioData, mediaType: message.audioMimeType || 'audio/webm' }
-                    ]
+        if (lastRawMessage.role === 'user' && lastRawMessage.audioData) {
+            try {
+                console.log("🎤 Message vocal détecté. Début de la transcription...");
+
+                // Convertir le base64 en Buffer
+                const audioBuffer = Buffer.from(lastRawMessage.audioData, 'base64');
+
+                // Préparer le fichier pour OpenAI
+                const mimeType = lastRawMessage.audioMimeType || 'audio/webm';
+                // OpenAI.toFile gère la conversion interne pour l'envoi multipart/form-data
+                const file = await OpenAI.toFile(audioBuffer, 'audio.webm', { type: mimeType });
+
+                // Appel à l'API Whisper
+                const transcription = await openaiClient.audio.transcriptions.create({
+                    file: file,
+                    model: 'whisper-1',
+                    // language: 'fr', // Optionnel : Décommente si tu veux forcer le français, mais laisse vide pour détecter le Wolof/Franglais
                 });
+
+                transcribedText = transcription.text;
+                console.log("✅ Transcription réussie :", transcribedText);
+            } catch (audioError) {
+                console.error("❌ Erreur lors de la transcription :", audioError);
+                transcribedText = "[Erreur de transcription audio]";
+            }
+        }
+
+        // ==========================================
+        // 2. FORMATAGE DES MESSAGES POUR GPT-4o
+        // ==========================================
+        const formattedMessages: ModelMessage[] = [];
+
+        rawMessages.forEach((message, index) => {
+            const isLast = index === rawMessages.length - 1;
+
+            if (message.role === 'user') {
+                let content = message.content || "";
+
+                // Si c'est le dernier message et qu'on a une transcription, on remplace le contenu
+                if (isLast && transcribedText) {
+                    content = transcribedText;
+                } else if (message.audioData && !isLast) {
+                    // Pour les anciens messages vocaux dans l'historique
+                    content = "Note vocale reçue.";
+                }
+
+                formattedMessages.push({ role: 'user', content });
             } else if (message.role === 'assistant') {
                 formattedMessages.push({ role: 'assistant', content: message.content });
-            } else {
-                formattedMessages.push({ role: 'user', content: message.content });
             }
         });
 
-        const lastUserMessage = rawMessages[rawMessages.length - 1].content || 'Message vocal';
+        // Le texte final qui sera sauvegardé en base de données
+        const finalUserText = transcribedText || lastRawMessage.content || 'Message vocal';
 
-        // Sauvegarde BDD - Création du chat
+        // ==========================================
+        // 3. GESTION BASE DE DONNÉES (SUPABASE)
+        // ==========================================
         if (supabase && userId && !chatId) {
-            const title = lastUserMessage.substring(0, 40) || "Nouveau chat";
-            const { data: newChat, error } = await supabase
+            const title = finalUserText.substring(0, 40) || "Nouveau chat";
+            const { data: newChat } = await supabase
                 .from('chats')
                 .insert([{ user_id: userId, title }])
-                .select()
-                .single();
-
-            if (!error && newChat) chatId = newChat.id;
+                .select().single();
+            if (newChat) chatId = newChat.id;
         }
 
-        // Sauvegarde BDD - Message Utilisateur
         if (supabase && chatId) {
-            await supabase.from('messages').insert([{ chat_id: chatId, role: 'user', content: lastUserMessage }]);
+            await supabase.from('messages').insert([{
+                chat_id: chatId,
+                role: 'user',
+                content: finalUserText
+            }]);
         }
 
-        // 🚨 MAGIE ICI : On utilise generateText avec Tavily ET un JSON forcé
+        // ==========================================
+        // 4. APPEL À GPT-4o (AVEC LE TEXTE TRANSCRI)
+        // ==========================================
         const result = await generateText({
-            model: vertex('gemini-2.5-flash'), // Utilise 1.5-flash qui est très stable
+            model: aiProvider('gpt-4o'), // Utilisation de l'alias
+            system: SYSTEM_PROMPT,
             messages: formattedMessages,
-            maxRetries: 5, // Nombre de tentatives en cas d'erreur
+            maxRetries: 5,
+            temperature: 0,
             tools: {
                 search_internet: tool({
-                    description: "Chercher des informations récentes sur internet (actualité, sport, lois, etc.).",
-                    execute: async ({ query }: { query: string }) => {
-                        console.log(`🔍 Firima cherche sur internet : ${query}`);
+                    description: "Chercher des informations récentes sur internet (actualité, politiques, annonces immobilières, etc.).",
+                    inputSchema: z.object({
+                        query: z.string().describe("La requête de recherche optimisée"),
+                    }),
+                    execute: async (args: { query: string }) => {
+                        const query = args.query;
+                        console.log(`🔍 GPT-4o cherche sur internet : ${query}`);
                         try {
                             const response = await fetch('https://api.tavily.com/search', {
                                 method: 'POST',
@@ -118,35 +168,38 @@ export async function POST(req: Request) {
                                     query: query,
                                     search_depth: "basic",
                                     include_answer: true,
-                                    days: 5
+                                    days: 30
                                 })
                             });
                             const data = await response.json();
-                            if (!data.results || data.results.length === 0) return "Aucune information récente trouvée.";
-                            return data.results.map((r: any) => `Titre: ${r.title}\nContenu: ${r.content}`).join('\n\n');
+                            if (!data.results || data.results.length === 0)
+                                return "Aucune information pertinente trouvée.";
+                            return data.results
+                                .map((r: any) => `Titre: ${r.title}\nContenu: ${r.content}`)
+                                .join('\n\n');
                         } catch (e) {
                             console.error("Erreur Tavily:", e);
                             return "Erreur lors de la recherche.";
                         }
                     },
-                    inputSchema: z.object({
-                        query: z.string().describe("La requête de recherche optimisée"),
-                    }),
                 }),
             }
         });
 
-        console.log(`🧠 L'IA a terminé en ${result.steps?.length || 1} étape(s). Texte brut :`, result.text.substring(0, 100) + '...');
+        console.log(`🧠 L'IA a terminé en ${result.steps?.length || 1} étape(s).`);
+        console.log(`📝 Texte brut COMPLET renvoyé par l'IA :`);
+        console.log(result.text);
 
-        // Extraction et nettoyage du JSON généré par l'IA
+        // ==========================================
+        // 5. PARSING JSON ET RETOUR
+        // ==========================================
         let parsedData;
         try {
-            // On nettoie les éventuels blocs de code Markdown (```json ... ```)
             const cleanJsonString = result.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
             parsedData = JSON.parse(cleanJsonString);
+            console.log(`✅ JSON parsé avec succès`);
         } catch (e) {
-            console.warn("L'IA n'a pas renvoyé un JSON pur, tentative de sauvetage :", result.text);
-            // Fallback de sécurité si l'IA hallucine le format
+            console.warn("⚠️ Fallback activé. Erreur parse :", e);
             parsedData = {
                 reply: result.text,
                 phonetic_string: result.text,
@@ -156,7 +209,6 @@ export async function POST(req: Request) {
 
         const aiReply = parsedData.reply || "Désolé, je n'ai pas pu formuler la réponse.";
 
-        // Sauvegarde BDD - Message Assistant
         if (supabase && chatId) {
             await supabase.from('messages').insert([{ chat_id: chatId, role: 'assistant', content: aiReply }]);
         }
@@ -166,6 +218,8 @@ export async function POST(req: Request) {
             phoneticAudio: parsedData.phonetic_string || aiReply,
             detectedLanguage: parsedData.detected_language || "mixed",
             chatId,
+            // Optionnel : renvoyer la transcription au front-end pour l'afficher à l'utilisateur
+            transcription: transcribedText
         });
 
     } catch (err: any) {
