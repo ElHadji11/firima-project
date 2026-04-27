@@ -2,7 +2,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { PromptInputBox } from "@/components/ui/ai-prompt-box";
 import { motion, AnimatePresence } from "framer-motion";
-import { User, Bot, StopCircle, Play, Pause, Volume2, RefreshCcw, ThumbsUp, ThumbsDown, Share2 } from "lucide-react";
 import { requiresAuthentication, incrementGuestCredits, resetGuestCredits } from '@/lib/utils';
 import { supabaseClient } from '@/lib/supabase';
 import { useAuth } from '@clerk/nextjs';
@@ -11,6 +10,15 @@ import { useRouter } from 'next/navigation';
 import LoadingState from './LoadingState';
 import PasserPro from './PasserPro';
 import WelcomeUser from './WelcomeUser';
+import {
+    User, Bot, StopCircle, Play, Pause, Volume2,
+    RefreshCcw, ThumbsUp, ThumbsDown, Share2,
+    Copy, Check, Edit2, // <-- Nouveaux imports
+    Zap,
+    Square,
+    X,
+    Send
+} from "lucide-react";
 
 // Définition de la structure d'un message
 interface Message {
@@ -55,6 +63,13 @@ export default function ChatTab() {
     const messageAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
     const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
 
+    const [feedback, setFeedback] = useState<Record<string, 'like' | 'dislike' | null>>({});
+    const [copiedId, setCopiedId] = useState<string | null>(null);
+
+    // États pour l'édition de message (Inline Edit)
+    const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
+    const [editValue, setEditValue] = useState("");
+
     // Auto-scroll vers le dernier message
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -67,6 +82,18 @@ export default function ChatTab() {
 
     // 1. On récupère le chatId depuis l'URL (s'il y en a un)
     const currentChatId = searchParams.get('chatId');
+
+    // ... vos autres useRef existants ...
+    const wsRef = useRef<WebSocket | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
+    const workletRef = useRef<AudioWorkletNode | null>(null);
+    const processorRef = useRef<ScriptProcessorNode | null>(null);
+
+    // Pour stocker la réponse texte qui arrive en streaming
+    const accumulatedTextRef = useRef<string>("");
+
+    const [isLiveRecording, setIsLiveRecording] = useState(false);
 
     // 2. EFFET MAGIQUE : Charger l'historique si on clique sur un ancien chat
     useEffect(() => {
@@ -209,35 +236,290 @@ export default function ChatTab() {
         }
     };
 
-    // Fonction appelée quand ton PromptInputBox envoie un message
-    const handleSendMessage = async (messageText: string, files?: File[]) => {
+    // --- UTILITAIRES POUR LE WEBSOCKET AUDIO ---
+    function floatTo16BitPCM(float32Array: Float32Array): ArrayBuffer {
+        const buffer = new ArrayBuffer(float32Array.length * 2);
+        const view = new DataView(buffer);
+        let offset = 0;
+        for (let i = 0; i < float32Array.length; i++, offset += 2) {
+            let s = Math.max(-1, Math.min(1, float32Array[i]));
+            view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+        return buffer;
+    }
 
-        // --- LOGIQUE DE LIMITE DE MESSAGES ---
+    function arrayBufferToBase64(buffer: ArrayBuffer): string {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return window.btoa(binary);
+    }
+
+    // 1. Copier le texte
+    const handleCopy = async (id: string, text: string) => {
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopiedId(id);
+            setTimeout(() => setCopiedId(null), 2000); // Remet l'icône normale après 2s
+        } catch (err) {
+            console.error("Erreur de copie :", err);
+        }
+    };
+
+    // 2. Partager (utilise l'API de partage native du téléphone/PC si dispo)
+    const handleShare = async (text: string) => {
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: 'Réponse de Firima',
+                    text: text,
+                });
+            } catch (err) {
+                console.log("Partage annulé ou échoué", err);
+            }
+        } else {
+            // Fallback si on est sur un vieux navigateur
+            handleCopy('share-fallback', text);
+            alert("Texte copié dans le presse-papier !");
+        }
+    };
+
+    // 3. Like / Dislike (Bascule on/off)
+    const handleFeedback = (id: string, type: 'like' | 'dislike') => {
+        setFeedback(prev => ({
+            ...prev,
+            [id]: prev[id] === type ? null : type // Annule si on reclique
+        }));
+        // TODO plus tard : Sauvegarder ce feedback dans Supabase pour améliorer Firima
+    };
+
+    // 4. Réessayer (Regénérer la dernière réponse)
+    const handleRetry = async () => {
+        if (isLoading) return;
+
+        const lastUserIndex = [...messages].map(m => m.role).lastIndexOf('user');
+        if (lastUserIndex === -1) return;
+
+        const historyToKeep = messages.slice(0, lastUserIndex + 1);
+        const lastUserMessage = historyToKeep[historyToKeep.length - 1];
+
+        // UI: retire juste la dernière réponse assistant, garde le dernier user pour éviter le clignotement
+        setMessages(historyToKeep);
+
+        // Renvoie sans dupliquer le user dans l'historique
+        await handleSendMessage(lastUserMessage.content, undefined, historyToKeep.slice(0, -1));
+    };
+
+    // 5. Éditer un ancien message utilisateur
+    const startEdit = (msg: Message) => {
+        setEditingMsgId(msg.id);
+        setEditValue(msg.content);
+    };
+
+    const saveEdit = async (msgId: string) => {
+        const msgIndex = messages.findIndex(m => m.id === msgId);
+        if (msgIndex === -1) return;
+
+        // On coupe l'historique jusqu'à ce message édité (on "remonte le temps")
+        const historyToKeep = messages.slice(0, msgIndex);
+        setMessages(historyToKeep);
+        setEditingMsgId(null);
+
+        // On envoie le message modifié !
+        await handleSendMessage(editValue);
+    };
+
+    // 1. Démarrer l'écoute en direct via AudioWorklet (Standard Moderne)
+    // const startLiveRecording = async () => {
+    //     setIsLiveRecording(true);
+    //     playEarcon();
+    //     accumulatedTextRef.current = "";
+
+    //     try {
+    //         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    //         streamRef.current = stream;
+
+    //         const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
+    //         const ws = new WebSocket(WS_URL);
+    //         wsRef.current = ws;
+
+    //         ws.onopen = () => {
+    //             console.log("🟢 Tunnel WebSocket ouvert");
+    //             ws.send(JSON.stringify({
+    //                 setup: {
+    //                     model: "models/gemini-2.0-flash-exp",
+    //                     systemInstruction: {
+    //                         parts: [{ text: "Tu es Firima. Tu comprends parfaitement le wolof. RÈGLE ABSOLUE : Tu réponds TOUJOURS EXCLUSIVEMENT EN FRANÇAIS. Sois concise, 1 à 3 phrases maximum." }]
+    //                     },
+    //                     generationConfig: { responseModalities: ["TEXT"] }
+    //                 }
+    //             }));
+    //         };
+
+    //         ws.onmessage = (event) => {
+    //             const response = JSON.parse(event.data);
+    //             if (response.serverContent) {
+    //                 const { modelTurn, turnComplete } = response.serverContent;
+
+    //                 if (modelTurn?.parts) {
+    //                     for (const part of modelTurn.parts) {
+    //                         if (part.text) accumulatedTextRef.current += part.text;
+    //                     }
+    //                 }
+
+    //                 if (turnComplete) {
+    //                     if (wsRef.current) wsRef.current.close();
+    //                     const finalContent = accumulatedTextRef.current.trim() || "Désolé, je n'ai pas bien entendu l'audio.";
+
+    //                     const assistantMessage: Message = {
+    //                         id: Date.now().toString(),
+    //                         role: 'assistant',
+    //                         content: finalContent,
+    //                         phoneticAudio: finalContent
+    //                     };
+
+    //                     setIsLoading(false);
+    //                     setMessages(prev => [...prev, assistantMessage]);
+    //                     setIsLiveRecording(false);
+    //                     setIsUserVoiceMode(false);
+
+    //                     if (accumulatedTextRef.current) playBotAudio(finalContent);
+    //                 }
+    //             }
+    //         };
+
+    //         ws.onerror = (err) => console.error("🔴 Erreur WebSocket:", err);
+
+    //         // --- DEBUT DU CODE AUDIO MODERNE (AudioWorklet) ---
+    //         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+    //         audioContextRef.current = audioCtx;
+    //         const source = audioCtx.createMediaStreamSource(stream);
+
+    //         // Création du processeur en arrière-plan à la volée (Blob)
+    //         const workletCode = `
+    //             class PCMProcessor extends AudioWorkletProcessor {
+    //                 process(inputs, outputs, parameters) {
+    //                     const input = inputs[0];
+    //                     if (input && input.length > 0) {
+    //                         const channelData = input[0];
+    //                         this.port.postMessage(channelData);
+    //                     }
+    //                     return true;
+    //                 }
+    //             }
+    //             registerProcessor('pcm-processor', PCMProcessor);
+    //         `;
+    //         const blob = new Blob([workletCode], { type: 'application/javascript' });
+    //         const workletUrl = URL.createObjectURL(blob);
+
+    //         // Chargement du Worklet dans le contexte audio
+    //         await audioCtx.audioWorklet.addModule(workletUrl);
+    //         const workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor');
+    //         workletRef.current = workletNode;
+
+    //         source.connect(workletNode);
+    //         // Bonus : avec AudioWorklet, on ne connecte plus à audioCtx.destination, 
+    //         // ce qui empêche tout risque d'écho dans le casque de l'utilisateur !
+
+    //         // Réception des données du processeur en arrière-plan
+    //         workletNode.port.onmessage = (e) => {
+    //             const inputData = e.data; // Float32Array provenant du Worklet
+    //             const pcm16Data = floatTo16BitPCM(inputData);
+    //             const base64Audio = arrayBufferToBase64(pcm16Data);
+
+    //             if (ws.readyState === WebSocket.OPEN) {
+    //                 ws.send(JSON.stringify({
+    //                     realtimeInput: { mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: base64Audio }] }
+    //                 }));
+    //             }
+    //         };
+    //         // --- FIN DU CODE AUDIO MODERNE ---
+
+    //     } catch (err) {
+    //         console.error("Erreur micro ou WS:", err);
+    //         setIsLiveRecording(false);
+    //     }
+    // };
+
+    // // 2. Arrêter ET traduire
+    // const stopLiveRecording = () => {
+    //     // 1. On coupe l'écoute de l'utilisateur
+    //     if (processorRef.current) processorRef.current.disconnect();
+    //     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+    //     if (audioContextRef.current) audioContextRef.current.close();
+
+    //     // 2. On affiche le message de l'utilisateur à l'écran
+    //     const userMessage: Message = {
+    //         id: Date.now().toString(),
+    //         role: 'user',
+    //         content: "🎤 [Audio Temps Réel]",
+    //         isAudio: false,
+    //     };
+
+    //     setMessages(prev => [...prev, userMessage]);
+    //     setIsLoading(true); // On lance le chargement de l'IA
+
+    //     // 3. On signale à Gemini que l'utilisateur a fini de parler
+    //     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    //         wsRef.current.send(JSON.stringify({ clientContent: { turnComplete: true } }));
+
+    //         // GARDE-FOU ANTI-BUG (15 secondes max).
+    //         // Normalement l'affichage se fera dans ws.onmessage. 
+    //         // Mais si le wifi coupe, on débloque l'application après 15s.
+    //         setTimeout(() => {
+    //             if (wsRef.current?.readyState === WebSocket.OPEN) {
+    //                 console.warn("Fermeture forcée, Gemini n'a pas répondu à temps !");
+    //                 wsRef.current.close();
+    //                 setIsLoading(false);
+    //                 setIsLiveRecording(false);
+    //                 setIsUserVoiceMode(false);
+
+    //                 setMessages(prev => [...prev, {
+    //                     id: Date.now().toString(),
+    //                     role: 'assistant',
+    //                     content: accumulatedTextRef.current || "Délai dépassé. Veuillez réessayer.",
+    //                 }]);
+    //             }
+    //         }, 15000);
+
+    //     } else {
+    //         setIsLoading(false);
+    //         setIsLiveRecording(false);
+    //         setIsUserVoiceMode(false);
+    //     }
+    // };
+
+    // 2. Annuler (Sans rien envoyer)
+    // const cancelLiveRecording = () => {
+    //     if (processorRef.current) processorRef.current.disconnect();
+    //     if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+    //     if (audioContextRef.current) audioContextRef.current.close();
+    //     if (wsRef.current) wsRef.current.close();
+
+    //     accumulatedTextRef.current = "";
+    //     setIsLiveRecording(false);
+    // };
+
+    // ==========================================
+    const handleSendMessage = async (messageText: string, files?: File[], customHistory?: Message[]) => {
+        if (isLoading) return; // Garde-fou anti-spam
+
         if (!isSignedIn) {
-            // Invité : Vérification de la limite gratuite
             const filesAttached = files !== undefined && files.length > 0;
             const authCheck = requiresAuthentication(filesAttached);
-
             if (authCheck.required) {
                 setAuthReason(authCheck.reason);
-                setIsUpgradeModalOpen(true); // Ouvre le composant PasserPro
+                setIsUpgradeModalOpen(true);
                 return;
             }
             incrementGuestCredits();
-        } else {
-            // Utilisateur connecté : Vérification de la limite Pro
-            // TODO: Remplace par ta vraie variable d'état ou DB
-            const limitReached = false; // Ex: memberCredits <= 0
-            if (limitReached) {
-                setIsUpgradeModalOpen(true); // Ouvre le composant PasserPro
-                return;
-            }
         }
 
         setIsLoading(true);
         let finalMessageText = messageText;
-        const isAudioMessage = messageText.includes('[Voice message') ||
-            files?.some(f => f.type.startsWith('audio/'));
+        const isAudioMessage = messageText.includes('[Voice message') || files?.some(f => f.type.startsWith('audio/'));
         const audioFile = files?.find(f => f.type.startsWith('audio/') || f.type.startsWith('video/'));
 
         let audioBase64: string | undefined;
@@ -245,7 +527,6 @@ export default function ChatTab() {
         let audioPreviewUrl: string | undefined;
         let audioDurationSec: number | undefined;
 
-        // Étape 1 : Préparer l'audio pour Gemini en base64 (multimodal natif)
         if (isAudioMessage && audioFile) {
             setIsUserVoiceMode(true);
             playEarcon();
@@ -253,17 +534,15 @@ export default function ChatTab() {
                 audioPreviewUrl = URL.createObjectURL(audioFile);
                 objectUrlsRef.current.push(audioPreviewUrl);
                 audioDurationSec = await getAudioDuration(audioFile);
-                finalMessageText = "";
-
+                finalMessageText = "🎤 [Message vocal standard]";
                 audioBase64 = await fileToBase64(audioFile);
                 audioMimeType = audioFile.type || 'audio/webm';
             } catch (err) {
-                console.error('Erreur lors de la lecture du fichier audio:', err);
+                console.error('Erreur lecture audio:', err);
                 finalMessageText = '[Erreur de lecture du message vocal]';
             }
         }
 
-        // Étape 2 : Ajout du message dans l'UI
         const userMessage: Message = {
             id: Date.now().toString(),
             role: 'user',
@@ -274,51 +553,68 @@ export default function ChatTab() {
             audioPreviewUrl,
             audioDurationSec,
         };
-        const updatedMessages = [...messages, userMessage];
+
+        const currentHistory = customHistory || messages;
+        const updatedMessages = [...currentHistory, userMessage];
         setMessages(updatedMessages);
 
-        // Étape 3 : Appel GPT-4o
         try {
+            // Création du Payload allégé (audio uniquement sur le dernier message)
+            const payload = {
+                text: finalMessageText || "🎤 [Message vocal]",
+                messages: updatedMessages.map((m, idx) => {
+                    const isLast = idx === updatedMessages.length - 1;
+                    const isLastUserAudio = isLast && m.role === 'user' && !!m.audioData;
+                    return {
+                        role: m.role,
+                        content: m.content,
+                        ...(isLastUserAudio ? { audioData: m.audioData, audioMimeType: m.audioMimeType } : {}),
+                    };
+                }),
+                chatId: currentChatId,
+            };
+
+            const payloadString = JSON.stringify(payload);
+            const payloadBytes = new TextEncoder().encode(payloadString).length;
+            console.log(`[ChatTab] payload size: ${payloadBytes} bytes (~${(payloadBytes / 1024).toFixed(1)} KB)`);
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 25000);
+
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    messages: updatedMessages.map((m) => ({
-                        role: m.role,
-                        content: m.content,
-                        audioData: m.audioData,
-                        audioMimeType: m.audioMimeType,
-                    })),
-                    chatId: currentChatId,
-                }),
+                body: payloadString,
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
-                throw new Error(`Chat API HTTP ${response.status}`);
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData?.error || `Chat API HTTP ${response.status}`);
             }
 
             const data = await response.json();
 
-            if (data.chatId && !currentChatId) {
-                router.replace(`/?chatId=${data.chatId}`);
-            }
-
             const assistantMessage: Message = {
                 id: Date.now().toString(),
                 role: 'assistant',
-                content: data.reply || "Je n'ai pas pu répondre. Réessaye.",
-                detectedLanguage: data.detectedLanguage,
-                phoneticAudio: data.phoneticAudio,
+                content: data.reply || "Je n'ai pas pu répondre.",
+                phoneticAudio: data.phoneticAudio || data.reply,
             };
 
             setMessages(prev => [...prev, assistantMessage]);
 
-        } catch (err) {
+        } catch (err: any) {
+            const msg = err?.name === 'AbortError'
+                ? "La requête a expiré (25s). Réessaie."
+                : "Une erreur est survenue. Vérifie ta connexion et réessaie.";
+
             console.error("Erreur envoi message:", err);
             setMessages(prev => [...prev, {
                 id: Date.now().toString(),
                 role: 'assistant',
-                content: "Une erreur est survenue. Vérifie ta connexion et réessaie.",
+                content: msg,
             }]);
         } finally {
             setIsLoading(false);
@@ -328,8 +624,10 @@ export default function ChatTab() {
 
     // Petite fonction pour jouer l'audio de la réponse via Nova
     const playBotAudio = async (phoneticText: string) => {
+        if (!phoneticText) return;
+
         try {
-            // Stop any currently playing audio before starting a new one
+            // 1. Nettoyage de l'audio précédent
             if (currentAudioRef.current) {
                 currentAudioRef.current.pause();
                 currentAudioRef.current.currentTime = 0;
@@ -341,35 +639,50 @@ export default function ChatTab() {
                 currentAudioUrlRef.current = null;
             }
 
+            // 2. PRÉVENTION CRUCIALE : On coupe le texte à 4000 caractères max.
+            // (L'API TTS d'OpenAI crashe si on dépasse 4096 caractères)
+            const safeText = phoneticText.substring(0, 4000);
+
+            // 3. Appel à l'API
             const res = await fetch('/api/tts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: phoneticText, targetLang: 'wolof' })
+                body: JSON.stringify({ text: safeText, targetLang: 'wolof' })
             });
-            if (res.ok) {
-                const audioBlob = await res.blob();
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = new Audio(audioUrl);
 
-                currentAudioUrlRef.current = audioUrl;
-                currentAudioRef.current = audio;
-
-                audio.onplay = () => setIsBotSpeaking(true);
-                audio.onpause = () => setIsBotSpeaking(false);
-                audio.onended = () => {
-                    setIsBotSpeaking(false);
-                    if (currentAudioUrlRef.current === audioUrl) {
-                        URL.revokeObjectURL(audioUrl);
-                        currentAudioUrlRef.current = null;
-                    }
-                    currentAudioRef.current = null;
-                };
-
-                await audio.play();
+            // 4. GESTION DES ERREURS (Au lieu de planter en silence)
+            if (!res.ok) {
+                const errorData = await res.json().catch(() => ({}));
+                console.error("Erreur API TTS :", res.status, errorData);
+                alert("Impossible de générer l'audio. Le texte est peut-être trop long ou votre quota OpenAI est dépassé.");
+                return;
             }
+
+            const audioBlob = await res.blob();
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+
+            currentAudioUrlRef.current = audioUrl;
+            currentAudioRef.current = audio;
+
+            audio.onplay = () => setIsBotSpeaking(true);
+            audio.onpause = () => setIsBotSpeaking(false);
+            audio.onended = () => {
+                setIsBotSpeaking(false);
+                if (currentAudioUrlRef.current === audioUrl) {
+                    URL.revokeObjectURL(audioUrl);
+                    currentAudioUrlRef.current = null;
+                }
+                currentAudioRef.current = null;
+            };
+
+            await audio.play();
+
         } catch (e) {
             console.error("Erreur lecture audio auto:", e);
             setIsBotSpeaking(false);
+            // Utile si les navigateurs bloquent l'autoplay (très fréquent sur iOS/Safari)
+            alert("Erreur de lecture audio. Si vous êtes sur iPhone, vérifiez que le mode silencieux est désactivé.");
         }
     };
 
@@ -397,7 +710,7 @@ export default function ChatTab() {
             <div className="flex flex-col w-full h-[90vh] max-h-[800px] rounded-xl overflow-hidden">
 
                 {/* ZONE D'HISTORIQUE (Style WhatsApp) */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:none]">
                     {messages.length === 0 ? (
                         <WelcomeUser onOpenProModal={() => setIsUpgradeModalOpen(true)} />
                     ) : (
@@ -514,36 +827,101 @@ export default function ChatTab() {
                                             </div>
                                         ) : (
                                             <div className="flex flex-col gap-2">
-                                                <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                                                {msg.role === 'assistant' && (
-                                                    <div className="flex flex-wrap items-center gap-1 mt-1">
 
-
-                                                        <button className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-foreground transition-all" title="Aimer">
-                                                            <ThumbsUp className="w-3.5 h-3.5" />
-                                                        </button>
-                                                        <button className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-foreground transition-all" title="Ne pas aimer">
-                                                            <ThumbsDown className="w-3.5 h-3.5" />
-                                                        </button>
-                                                        {index === messages.length - 1 && (
+                                                {editingMsgId === msg.id ? (
+                                                    <div className="flex flex-col gap-2 w-full min-w-[200px]">
+                                                        <textarea
+                                                            value={editValue}
+                                                            onChange={(e) => setEditValue(e.target.value)}
+                                                            className="w-full bg-background/50 border border-border rounded-lg p-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                                                            rows={3}
+                                                        />
+                                                        <div className="flex justify-end gap-2">
+                                                            <button onClick={() => setEditingMsgId(null)} className="text-xs px-2 py-1 hover:text-muted-foreground transition-colors">
+                                                                Annuler
+                                                            </button>
+                                                            <button onClick={() => saveEdit(msg.id)} className="text-xs bg-primary text-primary-foreground px-3 py-1 rounded-md hover:bg-primary/90 transition-colors">
+                                                                Envoyer
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex gap-2 group">
+                                                        {msg.role === 'user' && !msg.isAudio && index >= messages.length - 2 && (
                                                             <button
-                                                                className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-primary transition-all"
-                                                                title="Réessayer"
+                                                                onClick={() => startEdit(msg)}
+                                                                className="p-1 text-muted-foreground hover:text-foreground transition-all"
+                                                                title="Éditer le message"
                                                             >
-                                                                <RefreshCcw className="w-3.5 h-3.5" />
+                                                                <Edit2 className="w-3.5 h-3.5" />
                                                             </button>
                                                         )}
-                                                        <button className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-foreground transition-all" title="Partager">
-                                                            <Share2 className="w-3.5 h-3.5" />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => playBotAudio(msg.phoneticAudio || msg.content)}
-                                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-background/50 text-foreground/70 hover:bg-background hover:text-primary transition-all shadow-sm border border-border/50 text-xs font-medium mr-1"
-                                                            title="Écouter la réponse"
-                                                        >
-                                                            <Volume2 className="w-3.5 h-3.5" />
-                                                            Écouter
-                                                        </button>
+                                                        <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                                                            {msg.content}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {msg.role === 'assistant' && (
+                                                    <div className="flex flex-wrap items-center gap-1 mt-1">
+                                                        <div className="flex flex-wrap items-center gap-1 mt-2">
+                                                            {/* Écouter la réponse */}
+                                                            <button
+                                                                onClick={() => playBotAudio(msg.phoneticAudio || msg.content)}
+                                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-background/50 text-foreground/70 hover:bg-background hover:text-primary transition-all shadow-sm border border-border/50 text-xs font-medium mr-1"
+                                                                title="Écouter la réponse"
+                                                            >
+                                                                <Volume2 className="w-3.5 h-3.5" />
+                                                                Écouter
+                                                            </button>
+
+                                                            {/* Copier */}
+                                                            <button
+                                                                onClick={() => handleCopy(msg.id, msg.content)}
+                                                                className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-foreground transition-all"
+                                                                title="Copier"
+                                                            >
+                                                                {copiedId === msg.id ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                                                            </button>
+
+                                                            {/* Partager */}
+                                                            <button
+                                                                onClick={() => handleShare(msg.content)}
+                                                                className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-foreground transition-all"
+                                                                title="Partager"
+                                                            >
+                                                                <Share2 className="w-3.5 h-3.5" />
+                                                            </button>
+
+                                                            {/* Like */}
+                                                            <button
+                                                                onClick={() => handleFeedback(msg.id, 'like')}
+                                                                className={`p-1.5 rounded-full transition-all ${feedback[msg.id] === 'like' ? 'text-green-500 bg-green-500/10' : 'text-muted-foreground hover:bg-background/80 hover:text-foreground'}`}
+                                                                title="Bonne réponse"
+                                                            >
+                                                                <ThumbsUp className="w-3.5 h-3.5" />
+                                                            </button>
+
+                                                            {/* Dislike */}
+                                                            <button
+                                                                onClick={() => handleFeedback(msg.id, 'dislike')}
+                                                                className={`p-1.5 rounded-full transition-all ${feedback[msg.id] === 'dislike' ? 'text-red-500 bg-red-500/10' : 'text-muted-foreground hover:bg-background/80 hover:text-foreground'}`}
+                                                                title="Mauvaise réponse"
+                                                            >
+                                                                <ThumbsDown className="w-3.5 h-3.5" />
+                                                            </button>
+
+                                                            {/* Retry (Uniquement sur le tout dernier message de la liste) */}
+                                                            {index === messages.length - 1 && (
+                                                                <button
+                                                                    onClick={handleRetry}
+                                                                    className="p-1.5 rounded-full text-muted-foreground hover:bg-background/80 hover:text-primary transition-all ml-auto"
+                                                                    title="Générer une autre réponse"
+                                                                >
+                                                                    <RefreshCcw className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 )}
                                             </div>
@@ -562,7 +940,7 @@ export default function ChatTab() {
                 {/* ZONE DE SAISIE & VOICE MODE */}
                 <div className="relative flex min-h-[120px] items-end justify-center bg-gradient-to-t from-card to-transparent p-4">
                     <AnimatePresence mode="wait">
-                        {isUserVoiceMode ? (
+                        {isUserVoiceMode ?
                             <motion.div
                                 key="user-voice-mode"
                                 initial={{ opacity: 0, y: 20, scale: 0.9 }}
@@ -571,7 +949,9 @@ export default function ChatTab() {
                                 transition={{ duration: 0.4, ease: "easeOut" }}
                                 className="mx-auto flex w-full max-w-md flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-card/60 p-6 shadow-2xl backdrop-blur-md relative"
                             >
-                                <div className="text-sm font-medium uppercase tracking-widest text-foreground">Analyse vocale...</div>
+
+
+                                {/* L'animation des ondes */}
                                 <div className="flex gap-[3px] h-8 items-end">
                                     {Array.from({ length: 15 }).map((_, i) => (
                                         <motion.span
@@ -587,91 +967,116 @@ export default function ChatTab() {
                                         />
                                     ))}
                                 </div>
-                            </motion.div>
-                        ) : isBotSpeaking ? (
-                            <motion.div
-                                key="speaking-indicator"
-                                initial={{ opacity: 0, y: 20, scale: 0.9 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 20, scale: 0.9 }}
-                                transition={{ duration: 0.4, ease: "easeOut" }}
-                                className="mx-auto flex w-full max-w-md flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-card/60 p-6 shadow-2xl backdrop-blur-md relative"
-                            >
-                                <svg
-                                    width="40"
-                                    height="40"
-                                    viewBox="0 0 100 100"
-                                    fill="none"
-                                    strokeWidth="14"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    className="overflow-visible"
-                                >
-                                    <defs>
-                                        <linearGradient id="firima-glow" x1="0%" y1="100%" x2="100%" y2="0%">
-                                            <stop offset="0%" stopColor="hsl(var(--primary))" />
-                                            <stop offset="100%" stopColor="hsl(var(--accent))" />
-                                        </linearGradient>
-                                        <filter id="f-glow" x="-50%" y="-50%" width="200%" height="200%">
-                                            <feGaussianBlur stdDeviation="6" result="blur" />
-                                            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                                        </filter>
-                                    </defs>
-                                    <path
-                                        d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
-                                        className="stroke-muted"
-                                    />
-                                    <motion.path
-                                        d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
-                                        stroke="url(#firima-glow)"
-                                        filter="url(#f-glow)"
-                                        initial={{ pathLength: 0, opacity: 0.8 }}
-                                        animate={{ pathLength: 1, opacity: 1 }}
-                                        transition={{
-                                            pathLength: {
-                                                duration: 1.5,
-                                                ease: "easeInOut",
-                                                repeat: Infinity,
-                                                repeatType: "reverse",
-                                                repeatDelay: 0.2,
-                                            },
-                                            opacity: { duration: 0.5, repeat: Infinity, repeatType: "reverse" },
-                                        }}
-                                    />
-                                </svg>
 
-                                <div className="flex flex-col items-center gap-1">
-                                    <span className="text-sm font-medium uppercase tracking-widest text-foreground">Firima parle...</span>
-                                    <span className="animate-pulse text-xs text-muted-foreground">Wolof natif</span>
+                                {/* LES DEUX BOUTONS CÔTE À CÔTE */}
+                                <div className="mt-4 flex w-full max-w-[280px] items-center justify-between gap-3">
+                                    <button
+                                        type="button" // <-- CRUCIAL ICI
+                                        // onClick={cancelLiveRecording}
+                                        className="flex flex-1 items-center justify-center gap-2 rounded-full border border-border bg-background px-4 py-2.5 text-muted-foreground transition-all hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                                    >
+                                        <X className="h-4 w-4" />
+                                        <span className="text-sm font-medium">Arrêter</span>
+                                    </button>
+
+                                    <button
+                                        type="button" // <-- CRUCIAL ICI
+                                        // onClick={stopLiveRecording}
+                                        className="flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-4 py-2.5 text-primary-foreground shadow-md transition-all hover:bg-primary/90"
+                                    >
+                                        <span className="text-sm font-medium">Envoyer</span>
+                                        <Send className="h-4 w-4" />
+                                    </button>
                                 </div>
-
-                                <button
-                                    onClick={stopBotAudio}
-                                    className="absolute bottom-4 right-4 group flex items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-all hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive"
+                            </motion.div>
+                            : isBotSpeaking ? (
+                                <motion.div
+                                    key="speaking-indicator"
+                                    initial={{ opacity: 0, y: 20, scale: 0.9 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    exit={{ opacity: 0, y: 20, scale: 0.9 }}
+                                    transition={{ duration: 0.4, ease: "easeOut" }}
+                                    className="mx-auto flex w-full max-w-md flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-card/60 p-6 shadow-2xl backdrop-blur-md relative"
                                 >
-                                    <StopCircle className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-destructive" />
-                                    <span className="text-xs font-medium text-muted-foreground group-hover:text-destructive hidden sm:inline">Interrompre</span>
-                                </button>
-                            </motion.div>
-                        ) : (
-                            <motion.div
-                                key="prompt-box"
-                                initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                                transition={{ duration: 0.3, ease: "easeInOut" }}
-                                className="w-full"
-                            >
-                                <PromptInputBox
-                                    onSend={handleSendMessage}
-                                    isLoading={isLoading}
-                                    placeholder="Tapel fi... (Tape ton message...)"
-                                />
-                            </motion.div>
-                        )}
+                                    <svg
+                                        width="40"
+                                        height="40"
+                                        viewBox="0 0 100 100"
+                                        fill="none"
+                                        strokeWidth="14"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        className="overflow-visible"
+                                    >
+                                        <defs>
+                                            <linearGradient id="firima-glow" x1="0%" y1="100%" x2="100%" y2="0%">
+                                                <stop offset="0%" stopColor="hsl(var(--primary))" />
+                                                <stop offset="100%" stopColor="hsl(var(--accent))" />
+                                            </linearGradient>
+                                            <filter id="f-glow" x="-50%" y="-50%" width="200%" height="200%">
+                                                <feGaussianBlur stdDeviation="6" result="blur" />
+                                                <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                                            </filter>
+                                        </defs>
+                                        <path
+                                            d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
+                                            className="stroke-muted"
+                                        />
+                                        <motion.path
+                                            d="M 25 85 L 25 50 L 60 50 L 25 50 L 25 15 L 70 15"
+                                            stroke="url(#firima-glow)"
+                                            filter="url(#f-glow)"
+                                            initial={{ pathLength: 0, opacity: 0.8 }}
+                                            animate={{ pathLength: 1, opacity: 1 }}
+                                            transition={{
+                                                pathLength: {
+                                                    duration: 1.5,
+                                                    ease: "easeInOut",
+                                                    repeat: Infinity,
+                                                    repeatType: "reverse",
+                                                    repeatDelay: 0.2,
+                                                },
+                                                opacity: { duration: 0.5, repeat: Infinity, repeatType: "reverse" },
+                                            }}
+                                        />
+                                    </svg>
+
+                                    <div className="flex flex-col items-center gap-1">
+                                        <span className="text-sm font-medium uppercase tracking-widest text-foreground">Firima parle...</span>
+                                        <span className="animate-pulse text-xs text-muted-foreground">Wolof natif</span>
+                                    </div>
+
+                                    <button
+                                        onClick={stopBotAudio}
+                                        className="absolute bottom-4 right-4 group flex items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-all hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive"
+                                    >
+                                        <StopCircle className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-destructive" />
+                                        <span className="text-xs font-medium text-muted-foreground group-hover:text-destructive hidden sm:inline">Interrompre</span>
+                                    </button>
+                                </motion.div>
+                            ) : (
+                                <motion.div
+                                    key="prompt-box"
+                                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                                    transition={{ duration: 0.3, ease: "easeInOut" }}
+                                    className="w-full flex items-end gap-2"
+                                >
+                                    {/* L'ancienne boîte reste intacte et prend toute la place possible */}
+                                    <div className="flex-1">
+                                        <PromptInputBox
+                                            onSend={handleSendMessage}
+                                            isLoading={isLoading}
+                                            placeholder="Tapel fi... (Tape ton message...)"
+                                        />
+                                    </div>
+                                </motion.div>
+                            )
+                        }
                     </AnimatePresence>
                 </div>
-            </div>
+            </div >
             <PasserPro
                 isOpen={isUpgradeModalOpen}
                 onClose={() => setIsUpgradeModalOpen(false)}

@@ -10,40 +10,27 @@ import { z } from 'zod';
 // car Zod s'occupera de forcer la structure mathématiquement.
 const SYSTEM_PROMPT = `
 <IDENTITY>
-Tu es Firima, l'assistante IA premium de Traduct'Afriq, basée à Dakar, Sénégal.
-Tu parles couramment le français et le wolof urbain.
+Tu es Firima, l'assistante IA premium basée au Sénégal.
+Ta capacité spéciale : Tu comprends parfaitement le Wolof urbain, le français, et le franglais, mais **TU RÉPONDS EXCLUSIVEMENT EN FRANÇAIS**, de manière naturelle, comme une humaine qui choisit de parler français.
 </IDENTITY>
 
-<AUDIO_LISTENING_PROTOCOL>
-L'utilisateur peut t'envoyer directement des notes vocales.
-Tu as la capacité d'écouter ces fichiers audio natifs.
-Écoute très attentivement les nuances du Wolof et du Français.
-Si la qualité audio est mauvaise, déduis le sens logique.
-</AUDIO_LISTENING_PROTOCOL>
+<DYNAMIC_VERBOSITY_&_TONE>
+Tu dois IMPÉRATIVEMENT adapter la longueur et la structure de ta réponse :
 
-<RESPONSE_RULES>
-- Si l'utilisateur parle en wolof -> réponds uniquement en wolof.
-- Ne fournis une traduction française que si l'utilisateur la demande.
-- Si l'utilisateur parle en français → réponds en français avec expressions wolof si pertinent.
-- Sois chaleureux et naturel, comme un ami sénégalais bilingue.
-</RESPONSE_RULES>
+1. QUESTIONS BANALES & CONVERSATION (Small Talk) :
+- Exemples : Salutations ("Naka suba si ?"), questions simples.
+- Règle : Sois ultra-concise, chaleureuse et directe. 1 à 3 phrases maximum.
 
-<PHONETIC_OUTPUT_RULES>
-- Le champ phonetic_string doit être écrit pour une prononciation française (TTS OpenAI voix Nova).
-- Réécris le wolof de façon phonétique: jerejef -> dié-ré-dièf, waaw -> waou, ñun -> nioune, cëy -> thièye, xale -> khalé.
-- Si la réponse contient du français et du wolof, ne conserve que la partie wolof dans phonetic_string.
-- N'ajoute pas d'explications dans phonetic_string.
-</PHONETIC_OUTPUT_RULES>
+2. ACTUALITÉS ET RECHERCHES (Synthétique mais Détaillé) :
+- Exemples : "Quelles sont les nouvelles ?", "Que fait Ousmane Sonko ?", recherches web.
+- Règle d'or : Sois SYNTHÉTIQUE avec une FORTE DENSITÉ D'INFORMATION. Ne fais pas de longs discours ou d'introductions interminables. Va droit au but.
+- Format exigé : Utilise le format "Flash Info" (bullet points). Donne les détails cruciaux, les chiffres ou les faits marquants sous forme de liste à puces (avec des tirets ou des étoiles) pour que ce soit très rapide à lire.
+- Limite : Maximum 1 court paragraphe d'introduction, suivi de 3 ou 4 points clés très denses.
+</DYNAMIC_VERBOSITY_&_TONE>
 
-<RULES>
-1. FOCUS LOCAL : Si on te pose une question d'actualité, de sport ou de culture, privilégie TOUJOURS le contexte sénégalais et ouest-africain.
-2. TEMPS RÉEL : Utilise ton outil 'search_internet' dès qu'une question porte sur un événement récent.
-3. SÉCURITÉ STRICTE (CRITIQUE) : Tu dois REFUSER CATÉGORIQUEMENT de répondre à toute question ou demande impliquant :
-   - Le suicide ou l'automutilation (si détecté, propose des mots de soutien et conseille de chercher de l'aide).
-   - La violence, le terrorisme, ou la haine.
-   - Des activités illégales.
-   Si un utilisateur aborde ces sujets, réponds avec empathie mais fermeté que tu ne peux pas l'aider sur ce sujet, et change de conversation.
-</RULES>
+<TAVILY_SEARCH_ANTICIPATION>
+Si des informations de contexte issues d'une recherche web (News, Articles) te sont fournies dans le prompt caché, synthétise-les de manière intelligente. Ne te contente pas de copier-coller : croise les sources, mets en évidence les points clés et ajoute une légère touche de contexte si nécessaire pour le marché sénégalais ou africain, tout en restant strictement objective.
+</TAVILY_SEARCH_ANTICIPATION>
 `.trim();
 
 export async function POST(req: Request) {
@@ -139,7 +126,7 @@ export async function POST(req: Request) {
             model: vertex('gemini-2.5-flash'), // Utilise désormais Vertex AI
             system: SYSTEM_PROMPT,
             messages: formattedMessages,
-            
+
             // L'intégration de Tavily
             // @ts-ignore : L'interface generateObject peut ne pas typer explicitement tools selon la version du SDK
             tools: {
@@ -151,7 +138,7 @@ export async function POST(req: Request) {
                     // @ts-expect-error : Contournement du mismatch de type entre Zod/AI SDK pour la fonction execute
                     execute: async ({ query }: { query: string }) => {
                         console.log(`🔍 Firima cherche sur internet : ${query}`);
-                        
+
                         try {
                             const response = await fetch('https://api.tavily.com/search', {
                                 method: 'POST',
@@ -166,9 +153,9 @@ export async function POST(req: Request) {
                                     days: 5 // Limite aux infos des 5 derniers jours pour la fraîcheur
                                 })
                             });
-                            
+
                             const data = await response.json();
-                            
+
                             if (!data.results || data.results.length === 0) {
                                 return "Aucune information récente trouvée sur le web pour cette recherche.";
                             }
@@ -182,10 +169,10 @@ export async function POST(req: Request) {
                     },
                 }),
             },
-            
+
             // maxSteps est crucial : il permet à l'IA de faire la recherche PUIS de générer le JSON
             // @ts-ignore
-            maxSteps: 2, 
+            maxSteps: 2,
 
             // Le Schéma Zod remplace le prompt JSON de Claude. C'est strict et typé.
             schema: z.object({
@@ -214,16 +201,17 @@ export async function POST(req: Request) {
             chatId,
         });
 
-    } catch (error: any) {
-        console.error("Erreur API chat:", error);
+    } catch (err: any) {
+        const isTimeout = err?.name === 'AbortError';
+        const errorMessage = isTimeout
+            ? "La requête a pris trop de temps (timeout). Réessaie."
+            : (err?.message || "Une erreur est survenue. Vérifie ta connexion et réessaie.");
 
-        // Gestion de l'erreur de Quota / Rate limit
-        if (error?.statusCode === 429 || error?.message?.includes('429') || error?.message?.includes('Quota')) {
-             return NextResponse.json({ 
-                 error: "Je reçois trop de messages d'un coup ! Laissez-moi quelques secondes pour reprendre mon souffle." 
-             }, { status: 429 });
-        }
-
-        return NextResponse.json({ error: "Erreur interne du serveur." }, { status: 500 });
+        console.error("Erreur envoi message:", err);
+        setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: errorMessage,
+        }]);
     }
 }

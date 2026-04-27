@@ -589,6 +589,7 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
     };
 
     const handleSubmit = () => {
+        if (isLoading) return;
         // If there's a pending voice message, send it
         if (pendingVoiceFile || pendingVoiceMessage) {
             const voiceLabel = pendingVoiceMessage ?? "[Voice message]";

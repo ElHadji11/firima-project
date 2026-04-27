@@ -3,15 +3,14 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { SignInButton, SignUpButton, SignOutButton, useAuth, useUser } from '@clerk/nextjs';
-import { Loader2, User } from "lucide-react";
-// 🚨 IMPORT DU BOUTON SIDEBAR
+import { Loader2, User, LogOut, Settings } from "lucide-react";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
 export default function Header() {
@@ -23,81 +22,98 @@ export default function Header() {
         setMounted(true);
     }, []);
 
-    if (!mounted) return <header className="h-16 w-full border-b border-border/50 bg-background" />;
+    if (!mounted) return <header className="h-16 w-full border-b border-border/30 bg-background/50" />;
 
     return (
-        <header className="sticky top-0 z-50 w-full bg-background/80 backdrop-blur-lg supports-[backdrop-filter]:bg-background/60 border-b border-border/50 shadow-sm">
-            {/* J'ai supprimé la contrainte max-w-6xl pour que ça prenne toute la largeur proprement avec la sidebar */}
+        <header className="sticky top-0 z-50 w-full bg-background/60 backdrop-blur-2xl supports-[backdrop-filter]:bg-background/40 border-b border-white/5 shadow-[0_4px_30px_rgba(0,0,0,0.03)]">
             <div className="flex h-16 items-center justify-between px-4 md:px-6 w-full">
 
-                {/* 🚨 NOUVEAU CONTENEUR GAUCHE : Bouton Menu + Logo */}
-                <div className="flex items-center gap-2 sm:gap-4">
+                {/* 🚨 GAUCHE : Bouton Menu + Logo Premium */}
+                <div className="flex items-center gap-3 sm:gap-5">
 
-                    {/* Le bouton d'ouverture du menu (visible surtout sur mobile, ou pour rouvrir la sidebar si fermée sur desktop) */}
-                    <SidebarTrigger className="text-foreground/70 hover:text-foreground" />
+                    <SidebarTrigger className="text-muted-foreground hover:text-foreground transition-colors bg-transparent hover:bg-white/5" />
 
-                    {/* Logo Section */}
-                    <Link href="/" className="flex items-center space-x-2 sm:space-x-3 group">
-                        <div className="h-8 w-8 sm:h-10 sm:w-10 rounded-lg bg-gradient-to-br from-primary to-accent flex items-center justify-center group-hover:scale-110 transition-transform">
-                            <span className="text-base sm:text-lg font-bold text-primary-foreground">F</span>
+                    <Link href="/" className="flex items-center space-x-3 group outline-none">
+                        {/* Icône "F" Glassmorphism */}
+                        <div className="relative flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-accent/10 border border-primary/20 group-hover:border-primary/50 shadow-[0_0_15px_rgba(var(--primary),0.1)] group-hover:shadow-[0_0_20px_rgba(var(--primary),0.3)] transition-all duration-500 overflow-hidden">
+                            {/* Éclat interne au survol */}
+                            <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                            <span className="text-base sm:text-lg font-bold bg-clip-text text-transparent bg-gradient-to-br from-primary to-accent z-10">
+                                F
+                            </span>
                         </div>
-                        <span className="text-lg sm:text-xl font-bold text-foreground group-hover:text-primary transition-colors hidden sm:block">
+
+                        {/* Texte FIRIMA avec Gradient au survol */}
+                        <span className="text-lg sm:text-xl font-bold tracking-tight text-foreground/90 group-hover:text-transparent group-hover:bg-clip-text group-hover:bg-gradient-to-r group-hover:from-primary group-hover:to-accent transition-all duration-500 hidden sm:block">
                             FIRIMA
                         </span>
                     </Link>
                 </div>
 
-                {/* Right Section (inchangé) */}
+                {/* 🚨 DROITE : Authentification */}
                 <div className="flex items-center gap-4">
                     {!isLoaded ? (
                         <div className="flex items-center justify-center w-24">
-                            <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+                            <Loader2 className="w-5 h-5 text-primary/50 animate-spin" />
                         </div>
                     ) : isSignedIn ? (
-                        <div className="flex items-center gap-4 animate-in fade-in zoom-in duration-300">
+                        <div className="flex items-center gap-4 animate-in fade-in zoom-in duration-500">
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                    <button className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/20 text-primary transition-colors hover:bg-primary/30 font-bold outline-none ring-2 ring-transparent focus:ring-primary/50">
+                                    {/* Avatar avec anneau lumineux au survol */}
+                                    <button className="relative flex h-10 w-10 items-center justify-center rounded-full bg-muted border border-border/50 transition-all duration-300 hover:ring-2 hover:ring-primary/50 hover:border-primary/50 hover:shadow-[0_0_15px_rgba(var(--primary),0.3)] outline-none overflow-hidden">
                                         {user?.imageUrl ? (
-                                            <img src={user.imageUrl} alt="Profile" className="h-full w-full rounded-full object-cover" />
+                                            <img src={user.imageUrl} alt="Profile" className="h-full w-full object-cover" />
                                         ) : (
-                                            user?.firstName?.charAt(0) || user?.emailAddresses?.[0]?.emailAddress?.charAt(0)?.toUpperCase() || <User size={18} />
+                                            <span className="text-sm font-semibold text-foreground">
+                                                {user?.firstName?.charAt(0) || user?.emailAddresses?.[0]?.emailAddress?.charAt(0)?.toUpperCase()}
+                                            </span>
                                         )}
                                     </button>
                                 </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end" className="w-56 rounded-xl border-border bg-card p-1 shadow-2xl">
-                                    <div className="mb-1 rounded-lg bg-muted/30 px-2 py-2.5">
-                                        <p className="text-sm font-medium text-foreground">
+
+                                {/* Menu Déroulant Premium */}
+                                <DropdownMenuContent align="end" className="w-64 rounded-2xl border-white/10 bg-card/80 backdrop-blur-xl p-2 shadow-2xl mt-2">
+                                    <div className="mb-2 rounded-xl bg-gradient-to-br from-muted/50 to-muted/20 px-3 py-3 border border-white/5">
+                                        <p className="text-sm font-semibold text-foreground">
                                             {user?.fullName || "Utilisateur"}
                                         </p>
-                                        <p className="truncate text-xs text-muted-foreground">
+                                        <p className="truncate text-xs text-muted-foreground mt-0.5">
                                             {user?.primaryEmailAddress?.emailAddress}
                                         </p>
                                     </div>
-                                    <DropdownMenuSeparator className="bg-border/50" />
-                                    <DropdownMenuItem className="mt-1 cursor-pointer rounded-md p-2 text-foreground transition-colors focus:bg-accent/20 focus:text-accent-foreground">
+
+                                    <DropdownMenuItem className="cursor-pointer rounded-lg p-2.5 text-sm font-medium text-foreground/80 hover:text-foreground transition-colors focus:bg-white/5">
+                                        <Settings className="w-4 h-4 mr-2 text-muted-foreground" />
                                         Gérer le compte
                                     </DropdownMenuItem>
-                                    <DropdownMenuSeparator className="bg-border/50" />
-                                    <DropdownMenuItem asChild className="cursor-pointer rounded-md p-2 text-destructive transition-colors focus:bg-destructive/10 focus:text-destructive">
+
+                                    <DropdownMenuSeparator className="bg-white/5 my-1" />
+
+                                    <DropdownMenuItem asChild className="cursor-pointer rounded-lg p-2.5 text-sm font-medium text-destructive/80 transition-colors focus:bg-destructive/10 focus:text-destructive">
                                         <SignOutButton>
-                                            <button className="w-full text-left">Déconnexion</button>
+                                            <button className="w-full flex items-center">
+                                                <LogOut className="w-4 h-4 mr-2" />
+                                                Déconnexion
+                                            </button>
                                         </SignOutButton>
                                     </DropdownMenuItem>
                                 </DropdownMenuContent>
                             </DropdownMenu>
                         </div>
                     ) : (
-                        <div className="flex items-center gap-3 animate-in fade-in zoom-in duration-300">
+                        <div className="flex items-center gap-2 sm:gap-3 animate-in fade-in zoom-in duration-500">
                             <SignInButton mode="modal">
-                                <button className="text-sm font-medium text-foreground/60 hover:text-primary transition-colors cursor-pointer hidden sm:block">
+                                <button className="text-sm font-medium text-muted-foreground hover:text-foreground px-3 py-2 rounded-full hover:bg-white/5 transition-all cursor-pointer hidden sm:block">
                                     Connexion
                                 </button>
                             </SignInButton>
 
                             <SignUpButton mode="modal">
-                                <button className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-full font-medium text-sm h-9 px-4 transition-all shadow-md cursor-pointer">
-                                    S'inscrire
+                                <button className="relative group bg-primary hover:bg-primary/90 text-primary-foreground rounded-full font-medium text-sm h-9 px-5 transition-all duration-300 shadow-[0_0_0_0_rgba(var(--primary),0)] hover:shadow-[0_0_20px_rgba(var(--primary),0.4)] cursor-pointer overflow-hidden">
+                                    <span className="relative z-10">S'inscrire</span>
+                                    {/* Petit effet de reflet qui passe sur le bouton */}
+                                    <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent group-hover:animate-[shimmer_1.5s_infinite]" />
                                 </button>
                             </SignUpButton>
                         </div>

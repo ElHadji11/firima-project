@@ -25,7 +25,7 @@ export async function POST(req: Request) {
             voice: selectedVoice, // On utilise la voix "nova" définie ci-dessus
             input: text,
             response_format: "mp3",
-            speed: 0.95 // Vitesse ajustée pour bien articuler le Wolof
+            speed: 1.2
         });
 
         // Conversion en Buffer pour l'envoi au frontend
